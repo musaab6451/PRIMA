@@ -15,14 +15,21 @@ st.set_page_config(page_title="PRIMA Command Center", layout="wide", page_icon="
 # TELEGRAM CONFIG
 # Replace with your actual IDs
 TELEGRAM_TOKEN = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
-TELEGRAM_CHAT_ID = "1303832128" 
+TELEGRAM_CHAT_ID = ["1303832128","1287509530"] 
 
 def send_telegram_msg(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        params = {"chat_id": TELEGRAM_CHAT_ID, "text": f"🔱 *PRIMA:* {message}", "parse_mode": "Markdown"}
-        requests.get(url, params=params)
-    except: pass
+    """Sends a professional PRIMA alert to multiple users."""
+    for chat_id in CHAT_IDS:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            params = {
+                "chat_id": chat_id, 
+                "text": f"🔱 *PRIMA ALERT:* {message}", 
+                "parse_mode": "Markdown"
+            }
+            requests.get(url, params=params)
+        except Exception as e:
+            print(f"Error sending to {chat_id}: {e}")
 
 # --- 2. SESSION STATE INITIALIZATION ---
 if 'portfolio' not in st.session_state:
