@@ -1,5 +1,8 @@
+streamlit
 pandas
-numpy
 yfinance
 nselib
-pandas_ta
+ta
+plotly
+numpy
+matplotlib
