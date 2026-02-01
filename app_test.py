@@ -6,66 +6,67 @@ import ta
 import time
 import plotly.graph_objects as go
 from datetime import datetime
-from playsound3 import playsound
 import requests
+from playsound3 import playsound
 
-# --- CONFIG & PRIMA BRANDING ---
+# --- 1. PRIMA CONFIG & BRANDING ---
 st.set_page_config(page_title="PRIMA Command Center", layout="wide", page_icon="🔱")
 
-# --- USER SETTINGS (TELEGRAM) ---
-# To get these: Message @BotFather on Telegram to create a bot and get a TOKEN
-TELEGRAM_TOKEN = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o" 
-TELEGRAM_CHAT_ID = "1303832128"
+# TELEGRAM CONFIG
+# Replace with your actual IDs
+TELEGRAM_TOKEN = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
+TELEGRAM_CHAT_ID = "1303832128" 
 
 def send_telegram_msg(message):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={message}"
-        requests.get(url)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        params = {"chat_id": TELEGRAM_CHAT_ID, "text": f"🔱 *PRIMA:* {message}", "parse_mode": "Markdown"}
+        requests.get(url, params=params)
     except: pass
 
-# --- INITIALIZATION ---
+# --- 2. SESSION STATE INITIALIZATION ---
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = pd.DataFrame(columns=["Time", "Symbol", "Side", "Qty", "Entry", "LTP", "P&L"])
 if 'trade_log' not in st.session_state:
-    st.session_state.trade_log = pd.DataFrame(columns=["Time", "Symbol", "LTP", "Strategy", "RSI", "P&L"])
-if 'paper_portfolio' not in st.session_state:
-    st.session_state.paper_portfolio = {} # {Symbol: Entry_Price}
+    st.session_state.trade_log = pd.DataFrame(columns=["Time", "Symbol", "LTP", "Strategy", "Score"])
 
-# --- ENHANCED CHARTING ---
-def plot_advanced_chart(symbol):
-    df = yf.download(f"{symbol}.NS", period="5d", interval="15m", progress=False)
+# --- 3. DATA & ANALYSIS ENGINES ---
+@st.cache_data(ttl=3600)
+def get_nse_watchlist():
+    try:
+        return capital_market.equity_list()['SYMBOL'].head(100).tolist()
+    except:
+        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "SBIN", "ICICIBANK"]
+
+def plot_prima_chart(symbol):
+    # Fetching 1 Year of data for clean historical visibility
+    df = yf.download(f"{symbol}.NS", period="1y", interval="1d", progress=False)
     if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
     
-    # Add Technical Overlays for the Chart Tab
-    df['EMA20'] = ta.trend.ema_indicator(df['Close'], window=20)
-    df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+    df['SMA50'] = df['Close'].rolling(50).mean()
+    df['SMA200'] = df['Close'].rolling(200).mean()
 
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"))
-    fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='orange', width=1), name="EMA 20"))
-    fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], line=dict(color='cyan', width=1, dash='dash'), name="VWAP"))
-    
-    fig.update_layout(title=f"PRIMA Technical View: {symbol}", template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
+    # High-Visibility Area Line
+    fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', line=dict(color='#58a6ff', width=3),
+                             name="Price", fill='tozeroy', fillcolor='rgba(88,166,255,0.1)'))
+    # Trendlines
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='orange', width=1.5, dash='dot'), name="50 DMA"))
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA200'], line=dict(color='red', width=1.5), name="200 DMA"))
+
+    fig.update_layout(title=f"🏛️ {symbol} Historical Trend", template="plotly_dark", height=600,
+                      hovermode="x unified", xaxis=dict(rangeslider=dict(visible=True)))
     return fig
 
-# --- THE ENGINE ---
-def get_symbols():
-    try: return capital_market.equity_list()['SYMBOL'].head(100).tolist()
-    except: return ['RELIANCE', 'TCS', 'INFY']
-
-def run_prima_engine(symbols):
+# --- 4. THE CORE SCANNER ENGINE ---
+def run_scanner(symbols):
     results = []
     progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, symbol in enumerate(symbols):
-        # Update Progress Bar
-        progress = (i + 1) / len(symbols)
-        progress_bar.progress(progress)
-        status_text.text(f"PRIMA Scanning: {symbol} ({i+1}/{len(symbols)})")
-        
+    for i, sym in enumerate(symbols):
+        progress_bar.progress((i + 1) / len(symbols))
         try:
-            ticker = f"{symbol}.NS"
-            df = yf.download(ticker, period="5d", interval="15m", progress=False)
-            if df.empty: continue
+            df = yf.download(f"{sym}.NS", period="5d", interval="15m", progress=False)
+            if df.empty or len(df) < 20: continue
             if isinstance(df.columns, pd.MultiIndex): df.columns = [col[0] for col in df.columns]
 
             cp = float(df['Close'].iloc[-1])
@@ -74,63 +75,68 @@ def run_prima_engine(symbols):
             vwap_dist = ((cp - vwap) / vwap) * 100
             vol_spike = df['Volume'].iloc[-1] / df['Volume'].rolling(10).mean().iloc[-1]
 
-            strategy = "Wait"
-            priority = 3
-            
-            # GOLDEN LOGIC
+            strategy = "Scanning"
+            score = 0
             if rsi < 30 and vwap_dist < -1.2 and vol_spike > 1.5:
-                strategy = "⭐ GOLDEN BUY"; priority = 1
+                strategy = "⭐ GOLDEN BUY"; score = 10
             elif rsi > 70 and vwap_dist > 1.2 and vol_spike > 1.5:
-                strategy = "⭐ GOLDEN SELL"; priority = 1
-
-            if priority == 1:
-                # 1. Sound Alert
-                try: playsound("alert.mp3")
+                strategy = "⭐ GOLDEN SELL"; score = 10
+            
+            if score >= 10:
+                send_telegram_msg(f"{strategy} | {sym} at ₹{cp}")
+                try: playsound("alert.mp3") 
                 except: pass
-                # 2. Telegram Alert
-                send_telegram_msg(f"PRIMA SIGNAL: {strategy} in {symbol} at {cp}")
-                # 3. Log it
-                new_row = {"Time": datetime.now().strftime("%H:%M:%S"), "Symbol": symbol, "LTP": cp, "Strategy": strategy, "RSI": round(rsi,1), "P&L": "0.0"}
-                st.session_state.trade_log = pd.concat([st.session_state.trade_log, pd.DataFrame([new_row])], ignore_index=True)
 
-            results.append({"Symbol": symbol, "LTP": cp, "RSI": round(rsi,1), "VWAP_Dist%": round(vwap_dist,2), "Vol_Spike": round(vol_spike,2), "Strategy": strategy, "prio": priority})
+            results.append({"Symbol": sym, "LTP": cp, "RSI": round(rsi, 1), "VWAP_Dist": round(vwap_dist, 2), "Strategy": strategy, "Score": score})
         except: continue
-    
     progress_bar.empty()
-    status_text.empty()
     return pd.DataFrame(results)
 
-# --- UI TABS ---
-st.title("🔱 PRIMA COMMAND CENTER v4.0")
-tab1, tab2, tab3, tab4 = st.tabs(["⚡ Live Scan", "📜 Signal Log", "📊 Technical Charts", "💼 Paper Portfolio"])
+# --- 5. UI LAYOUT ---
+st.title("🔱 PRIMA COMMAND CENTER v5.0")
+tab1, tab2, tab3 = st.tabs(["📊 Market Scanner", "💼 Paper Portfolio", "📈 Historical Analysis"])
 
-symbols_list = get_symbols()
+watchlist = get_nse_watchlist()
+
+# SIDEBAR: QUICK EXECUTION
+with st.sidebar:
+    st.header("🚀 Execution")
+    with st.form("trade_form"):
+        trade_sym = st.selectbox("Symbol", watchlist)
+        side = st.radio("Side", ["BUY", "SELL"])
+        qty = st.number_input("Qty", 1, 10000, 100)
+        if st.form_submit_button("EXECUTE"):
+            price = yf.download(f"{trade_sym}.NS", period="1d", interval="1m", progress=False)['Close'].iloc[-1]
+            new_trade = {"Time": datetime.now().strftime("%H:%M"), "Symbol": trade_sym, "Side": side, "Qty": qty, "Entry": round(price,2), "LTP": round(price,2), "P&L": 0.0}
+            st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
+            st.toast(f"Trade Entered: {trade_sym}")
 
 with tab1:
-    live_area = st.empty()
+    scan_area = st.empty()
 
 with tab2:
-    st.subheader("Golden Signal History")
-    st.dataframe(st.session_state.trade_log, width="stretch", hide_index=True)
+    st.subheader("Live Paper P&L")
+    if not st.session_state.portfolio.empty:
+        # Update Portfolio LTP
+        for idx, row in st.session_state.portfolio.iterrows():
+            curr_price = yf.download(f"{row['Symbol']}.NS", period="1d", interval="1m", progress=False)['Close'].iloc[-1]
+            st.session_state.portfolio.at[idx, 'LTP'] = round(curr_price, 2)
+            pnl = (curr_price - row['Entry']) * row['Qty'] if row['Side'] == "BUY" else (row['Entry'] - curr_price) * row['Qty']
+            st.session_state.portfolio.at[idx, 'P&L'] = round(pnl, 2)
+        st.dataframe(st.session_state.portfolio, width="stretch", hide_index=True)
+    else:
+        st.info("No active trades. Use the sidebar to enter a position.")
 
 with tab3:
-    col_a, col_b = st.columns([1, 4])
-    with col_a:
-        chart_sym = st.selectbox("Analyze Symbol", symbols_list)
-    with col_b:
-        if chart_sym:
-            st.plotly_chart(plot_advanced_chart(chart_sym), use_container_width=True)
+    analysis_sym = st.selectbox("Symbol to Analyze", watchlist)
+    if analysis_sym:
+        st.plotly_chart(plot_prima_chart(analysis_sym), use_container_width=True)
 
-with tab4:
-    st.info("Coming Soon: Real-time P&L tracking for paper trades.")
-    # Here we will add the 'Buy' button logic next!
-
-# --- MAIN LOOP ---
+# --- 6. AUTO-REFRESH LOOP ---
 while True:
-    report = run_prima_engine(symbols_list)
-    if not report.empty:
-        report = report.sort_values("prio").drop(columns="prio")
-        with live_area.container():
-            st.write(f"Refreshed at: {datetime.now().strftime('%H:%M:%S')}")
-            st.dataframe(report.style.background_gradient(subset=['RSI'], cmap='coolwarm'), width="stretch", hide_index=True)
-    time.sleep(60) # Scanning 100 stocks takes time; 1 min interval is safer for yfinance
+    data = run_scanner(watchlist)
+    if not data.empty:
+        with scan_area.container():
+            st.dataframe(data.sort_values("Score", ascending=False).style.background_gradient(subset=['Score'], cmap='RdYlGn'), 
+                         width="stretch", hide_index=True)
+    time.sleep(60)
