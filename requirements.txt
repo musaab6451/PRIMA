@@ -4,6 +4,5 @@ yfinance
 nselib
 ta
 plotly
-numpy
-matplotlib
 playsound3
+requests
