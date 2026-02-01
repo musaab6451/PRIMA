@@ -6,3 +6,4 @@ ta
 plotly
 playsound3
 requests
+matplotlib
