@@ -4,138 +4,136 @@ import yfinance as yf
 from nselib import capital_market
 import ta
 import time
-import requests
 from datetime import datetime
 import secrets
+import plotly.express as px # Added for the Risk Dashboard
 
 # --- CONFIG ---
-st.set_page_config(page_title="PRIMA Terminal v8.0", layout="wide")
+st.set_page_config(page_title="PRIMA v9.1 | Risk Analytics", layout="wide")
 
-# Telegram Broadcaster
-def broadcast(msg):
-    token = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
-    chat_ids = ["1303832128","1287509530"] 
-    for cid in chat_ids:
-        try:
-            requests.get(f"https://api.telegram.org/bot{token}/sendMessage", 
-                         params={"chat_id": cid, "text": f"🔱 PRIMA: {msg}", "parse_mode": "Markdown"}, timeout=1)
-        except Exception: pass
-
-# --- SESSION STATE ---
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Side", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
-if 'history' not in st.session_state:
-    st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Reason"])
-if 'balance' not in st.session_state:
-    st.session_state.balance = 50000.0
-
-# --- FUNCTIONS ---
-def close_position(row_id, reason="MANUAL KILL ⚔️"):
-    if row_id in st.session_state.portfolio['ID'].values:
-        idx = st.session_state.portfolio[st.session_state.portfolio['ID'] == row_id].index[0]
-        row = st.session_state.portfolio.loc[idx]
-        st.session_state.balance += (row['LTP'] * row['Qty'])
-        
-        new_hist = pd.DataFrame([{"Time": datetime.now().strftime("%H:%M:%S"), "Symbol": row['Symbol'], "Side": row['Side'], 
-                                  "Entry": row['Entry'], "Exit": row['LTP'], "P&L": row['P&L'], "Reason": reason}])
-        st.session_state.history = pd.concat([st.session_state.history, new_hist], ignore_index=True)
-        
-        broadcast(f"*CLOSED:* {row['Symbol']} | P&L: ₹{row['P&L']}")
-        st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
+# --- SIDEBAR: STRATEGY & RISK ---
+with st.sidebar:
+    st.title("🔱 PRIMA Control")
+    active_strat = st.selectbox("Trading Engine", 
+                                ["RSI Mean Reversion", "EMA Crossover (9/21)", "Bollinger Mean Reversion", "VWAP Scalping"])
+    
+    st.divider()
+    st.subheader("💰 Capital Control")
+    total_cap = st.number_input("Total Capital (₹)", value=50000.0)
+    max_trades = st.slider("Max Open Positions", 1, 10, 5)
+    risk_per_trade = total_cap / max_trades
+    
+    st.divider()
+    if st.button("🚨 GLOBAL KILL SWITCH", type="primary", use_container_width=True):
+        st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
         st.rerun()
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("🔱 Controls")
-    if st.button("🚨 GLOBAL KILL", use_container_width=True, type="primary"):
-        if not st.session_state.portfolio.empty:
-            for rid in st.session_state.portfolio['ID'].tolist():
-                close_position(rid, "GLOBAL SHUTDOWN 🔌")
-    
-    rsi_buy = st.slider("RSI Buy Zone", 10, 50, 30)
-    vwap_dist = st.slider("VWAP Dist %", -5.0, -0.5, -1.5)
+# --- STATE INITIALIZATION ---
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
+if 'history' not in st.session_state:
+    st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Entry", "Exit", "P&L"])
+if 'balance' not in st.session_state:
+    st.session_state.balance = total_cap
+if 'last_scan' not in st.session_state:
+    st.session_state.last_scan = 0
 
-# --- UI TABS ---
-st.title("🔱 PRIMA AUTONOMOUS COMMAND v8.0")
-m1, m2, m3 = st.columns(3)
-total_pnl = st.session_state.portfolio['P&L'].sum() if not st.session_state.portfolio.empty else 0
-m1.metric("Wallet", f"₹{round(st.session_state.balance, 2)}")
-m2.metric("Positions", len(st.session_state.portfolio))
-m3.metric("Live P&L", f"₹{round(total_pnl, 2)}", delta=f"{round(total_pnl, 2)}")
-
-tab1, tab2, tab3 = st.tabs(["📺 Market Watch", "⚔️ Position Control", "📜 History"])
-
-# --- THE FIX: EMPTY PLACEHOLDERS ---
-# We define these OUTSIDE the loop so they are only created once
-portfolio_container = tab2.empty()
-history_container = tab3.empty()
-scanner_container = tab1.empty()
-
+# --- DATA HELPERS ---
 @st.cache_data(ttl=86400)
-def get_100_symbols():
+def get_master_data():
     df = capital_market.equity_list()
-    name_col = next((c for c in ['NAME_OF_COMPANY', 'NAME OF COMPANY', 'NAME'] if c in df.columns), 'SYMBOL')
-    return df.rename(columns={name_col: 'Company'})[['SYMBOL', 'Company']].head(100).to_dict('records')
+    # Flexible column detection for Sector/Industry
+    sec_col = next((c for c in ['SERIES', 'INDUSTRY', 'GROUP'] if c in df.columns), 'SYMBOL')
+    name_col = next((c for c in ['NAME_OF_COMPANY', 'NAME'] if c in df.columns), 'SYMBOL')
+    
+    df = df.rename(columns={sec_col: 'Sector', name_col: 'Company'})
+    return df[['SYMBOL', 'Company', 'Sector']].head(100)
 
-master_list = get_100_symbols()
+master_df = get_master_data()
+
+# --- REAL-TIME CALCULATIONS ---
+# P&L Formula: $$ P\&L = (LTP - Entry) \times Qty $$
+current_pos_val = (st.session_state.portfolio['LTP'] * st.session_state.portfolio['Qty']).sum()
+live_pnl = st.session_state.portfolio['P&L'].sum()
+
+# --- UI HEADER ---
+st.title("🔱 PRIMA RISK COMMAND CENTER")
+h1, h2, h3, h4 = st.columns(4)
+h1.metric("Available Cash", f"₹{round(st.session_state.balance, 2)}")
+h2.metric("Total Position Value", f"₹{round(current_pos_val, 2)}")
+h3.metric("Live Session P&L", f"₹{round(live_pnl, 2)}", delta=f"{round(live_pnl, 2)}")
+h4.metric("Risk Utilization", f"{round((current_pos_val/total_cap)*100, 1)}%")
+
+tab1, tab2, tab3, tab4 = st.tabs(["📺 Market Watch", "⚔️ Active Positions", "📊 Risk Analytics", "📜 History"])
+
+# --- STRATEGY ENGINE ---
+def check_signal(df, strategy):
+    cp = df['Close'].iloc[-1]
+    if strategy == "RSI Mean Reversion":
+        return ta.momentum.RSIIndicator(df['Close']).rsi().iloc[-1] < 30
+    elif strategy == "EMA Crossover (9/21)":
+        return ta.trend.EMAIndicator(df['Close'], 9).ema_indicator().iloc[-1] > ta.trend.EMAIndicator(df['Close'], 21).ema_indicator().iloc[-1]
+    return False
 
 # --- MAIN LOOP ---
+watch_space = tab1.empty()
+pos_space = tab2.empty()
+risk_space = tab4.empty() # Placeholder for Risk tab
+
 while True:
-    # 1. RISK & P&L (Back-end logic)
+    # 1. POSITION REFRESH (1-SEC)
     if not st.session_state.portfolio.empty:
         for idx, row in st.session_state.portfolio.iterrows():
             try:
-                ticker = yf.Ticker(f"{row['Symbol']}.NS")
-                current_ltp = ticker.fast_info['last_price']
-                st.session_state.portfolio.at[idx, 'LTP'] = round(current_ltp, 2)
-                st.session_state.portfolio.at[idx, 'P&L'] = round((current_ltp - row['Entry']) * row['Qty'], 2)
+                t = yf.Ticker(f"{row['Symbol']}.NS")
+                ltp = t.fast_info['last_price']
+                st.session_state.portfolio.at[idx, 'LTP'] = round(ltp, 2)
+                st.session_state.portfolio.at[idx, 'P&L'] = round((ltp - row['Entry']) * row['Qty'], 2)
                 
-                if current_ltp <= row['Stop']: close_position(row['ID'], "STOP LOSS 🛑")
-                elif current_ltp >= row['Target']: close_position(row['ID'], "TARGET HIT 🎯")
+                # Risk Guard: SL/TP
+                if ltp <= row['Stop'] or ltp >= row['Target']:
+                    st.session_state.balance += (ltp * row['Qty'])
+                    st.session_state.portfolio = st.session_state.portfolio.drop(idx)
+                    st.rerun()
             except: continue
 
-    # 2. RENDER PORTFOLIO (Tab 2)
-    with portfolio_container.container():
-        if st.session_state.portfolio.empty:
-            st.info("No active trades.")
+    with pos_space.container():
+        st.dataframe(st.session_state.portfolio.drop(columns=['ID']), use_container_width=True, hide_index=True)
+
+    # 2. RISK DASHBOARD (TAB 3)
+    with tab3:
+        if not st.session_state.portfolio.empty:
+            st.subheader("Sector Exposure")
+            # Image of a sector allocation pie chart for a stock portfolio
+            
+            sector_data = st.session_state.portfolio.groupby('Sector')['Qty'].sum().reset_index()
+            fig = px.pie(sector_data, values='Qty', names='Sector', hole=0.4, title="Capital Distribution by Sector")
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            # We display the data but only create buttons if the tab is being viewed
-            st.dataframe(st.session_state.portfolio.drop(columns=['ID']), width="stretch", hide_index=True)
-            for idx, row in st.session_state.portfolio.iterrows():
-                # Added a secondary random salt to the key to be absolutely safe
-                if st.button(f"KILL {row['Symbol']}", key=f"btn_{row['ID']}_{secrets.token_hex(2)}"):
-                    close_position(row['ID'])
+            st.info("No active risk to analyze.")
 
-    # 3. RENDER HISTORY (Tab 3)
-    with history_container.container():
-        st.dataframe(st.session_state.history, width="stretch", hide_index=True)
-
-    # 4. SCANNER (Tab 1)
-    scan_results = []
-    for item in master_list:
-        sym = item['SYMBOL']
-        try:
-            df = yf.download(f"{sym}.NS", period="2d", interval="15m", progress=False)
-            if df.empty: continue
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
-            cp = float(df['Close'].iloc[-1])
-            rsi = ta.momentum.RSIIndicator(df['Close']).rsi().iloc[-1]
-            vwap = ((df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()).iloc[-1]
-            dist = ((cp - vwap) / vwap) * 100
-            
-            if rsi < rsi_buy and dist < vwap_dist:
-                if sym not in st.session_state.portfolio['Symbol'].values and st.session_state.balance > (cp * 10):
-                    uid = f"{sym}_{int(time.time())}_{secrets.token_hex(3)}"
-                    new_trade = {"ID": uid, "Symbol": sym, "Side": "BUY", "Qty": 10, "Entry": cp, "LTP": cp, "P&L": 0.0, "Target": cp*1.03, "Stop": cp*0.985}
-                    st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
-                    st.session_state.balance -= (cp * 10)
-                    broadcast(f"🚀 *ENTRY:* {sym} @ {cp}")
-
-            scan_results.append({"Company": item['Company'], "Symbol": sym, "LTP": cp, "RSI": round(rsi,1)})
-        except: continue
+    # 3. SCANNER (2-MIN)
+    if time.time() - st.session_state.last_scan > 120:
+        results = []
+        for _, stock in master_df.iterrows():
+            try:
+                data = yf.download(f"{stock['SYMBOL']}.NS", period="2d", interval="15m", progress=False)
+                if check_signal(data, active_strat):
+                    # Smart Allocation
+                    if len(st.session_state.portfolio) < max_trades and st.session_state.balance >= risk_per_trade:
+                        cp = data['Close'].iloc[-1]
+                        qty = int(risk_per_trade / cp)
+                        uid = f"{stock['SYMBOL']}_{secrets.token_hex(2)}"
+                        new_trade = {"ID": uid, "Symbol": stock['SYMBOL'], "Sector": stock['Sector'], 
+                                     "Qty": qty, "Entry": cp, "LTP": cp, "P&L": 0.0, 
+                                     "Target": cp*1.03, "Stop": cp*0.98}
+                        st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
+                        st.session_state.balance -= (cp * qty)
+                results.append({"Symbol": stock['SYMBOL'], "Sector": stock['Sector'], "Price": data['Close'].iloc[-1]})
+            except: continue
         
-    with scanner_container.container():
-        st.dataframe(pd.DataFrame(scan_results), width="stretch", hide_index=True)
-    
+        st.session_state.last_scan = time.time()
+        with watch_space.container():
+            st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+
     time.sleep(1)
