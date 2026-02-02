@@ -56,6 +56,50 @@ if 'strategy_stats' not in st.session_state:
         "Volume Breakout": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
         "Multi-Timeframe Trend": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0}
     }
+# --- HELPER FUNCTIONS ---
+
+@st.cache_data(ttl=86400)
+def get_master_data():
+    """Fetch NSE stock list with error handling"""
+    try:
+        raw_df = capital_market.equity_list()
+        raw_df.columns = [c.upper().strip() for c in raw_df.columns]
+        sym_col = next((c for c in ['SYMBOL', 'SYM'] if c in raw_df.columns), raw_df.columns[0])
+        sec_col = next((c for c in ['INDUSTRY', 'GROUP', 'SECTOR'] if c in raw_df.columns), None)
+        
+        processed_df = pd.DataFrame()
+        processed_df['SYMBOL'] = raw_df[sym_col].astype(str)
+        processed_df['SECTOR'] = raw_df[sec_col].astype(str) if sec_col else "General"
+        
+        # Filter out invalid symbols
+        processed_df = processed_df[processed_df['SYMBOL'].str.len() > 0]
+        
+        # Remove stocks with special characters (bonds, warrants, etc)
+        processed_df = processed_df[~processed_df['SYMBOL'].str.contains('-', na=False)]
+        
+        # Scan ALL stocks - no limit
+        return processed_df
+    except Exception as e:
+        st.sidebar.warning(f"Using fallback stock list: {str(e)}")
+        # Expanded fallback to top 50 liquid NSE stocks
+        return pd.DataFrame({
+            'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 
+                      'ITC', 'KOTAKBANK', 'LT', 'HINDUNILVR', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
+                      'BAJFINANCE', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'SUNPHARMA', 'WIPRO',
+                      'HCLTECH', 'TATAMOTORS', 'ONGC', 'NTPC', 'POWERGRID', 'M&M', 'ADANIPORTS',
+                      'BAJAJFINSV', 'DRREDDY', 'TECHM', 'COALINDIA', 'CIPLA', 'DIVISLAB', 'GRASIM',
+                      'EICHERMOT', 'BRITANNIA', 'SHREECEM', 'INDUSINDBK', 'BPCL', 'JSWSTEEL',
+                      'TATACONSUM', 'TATASTEEL', 'APOLLOHOSP', 'HINDALCO', 'ADANIENT', 'HEROMOTOCO',
+                      'UPL', 'BAJAJ-AUTO', 'LTIM', 'SBILIFE'],
+            'SECTOR': ['Energy', 'IT', 'IT', 'Finance', 'Finance', 'Finance', 'Telecom', 
+                      'FMCG', 'Finance', 'Infra', 'FMCG', 'Finance', 'Paint', 'Auto',
+                      'Finance', 'Consumer', 'Cement', 'FMCG', 'Pharma', 'IT',
+                      'IT', 'Auto', 'Energy', 'Power', 'Power', 'Auto', 'Infra',
+                      'Finance', 'Pharma', 'IT', 'Energy', 'Pharma', 'Pharma', 'Cement',
+                      'Auto', 'FMCG', 'Cement', 'Finance', 'Energy', 'Metals',
+                      'FMCG', 'Metals', 'Healthcare', 'Metals', 'Diversified', 'Auto',
+                      'Chemicals', 'Auto', 'IT', 'Finance']
+        })
 
 # --- SIDEBAR: STRATEGY & RISK ---
 with st.sidebar:
@@ -162,50 +206,6 @@ with st.sidebar:
     if st.session_state.auto_refresh:
         st.info("🔄 Auto-refresh: ON (5s)")
 
-# --- HELPER FUNCTIONS ---
-
-@st.cache_data(ttl=86400)
-def get_master_data():
-    """Fetch NSE stock list with error handling"""
-    try:
-        raw_df = capital_market.equity_list()
-        raw_df.columns = [c.upper().strip() for c in raw_df.columns]
-        sym_col = next((c for c in ['SYMBOL', 'SYM'] if c in raw_df.columns), raw_df.columns[0])
-        sec_col = next((c for c in ['INDUSTRY', 'GROUP', 'SECTOR'] if c in raw_df.columns), None)
-        
-        processed_df = pd.DataFrame()
-        processed_df['SYMBOL'] = raw_df[sym_col].astype(str)
-        processed_df['SECTOR'] = raw_df[sec_col].astype(str) if sec_col else "General"
-        
-        # Filter out invalid symbols
-        processed_df = processed_df[processed_df['SYMBOL'].str.len() > 0]
-        
-        # Remove stocks with special characters (bonds, warrants, etc)
-        processed_df = processed_df[~processed_df['SYMBOL'].str.contains('-', na=False)]
-        
-        # Scan ALL stocks - no limit
-        return processed_df
-    except Exception as e:
-        st.sidebar.warning(f"Using fallback stock list: {str(e)}")
-        # Expanded fallback to top 50 liquid NSE stocks
-        return pd.DataFrame({
-            'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 
-                      'ITC', 'KOTAKBANK', 'LT', 'HINDUNILVR', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
-                      'BAJFINANCE', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'SUNPHARMA', 'WIPRO',
-                      'HCLTECH', 'TATAMOTORS', 'ONGC', 'NTPC', 'POWERGRID', 'M&M', 'ADANIPORTS',
-                      'BAJAJFINSV', 'DRREDDY', 'TECHM', 'COALINDIA', 'CIPLA', 'DIVISLAB', 'GRASIM',
-                      'EICHERMOT', 'BRITANNIA', 'SHREECEM', 'INDUSINDBK', 'BPCL', 'JSWSTEEL',
-                      'TATACONSUM', 'TATASTEEL', 'APOLLOHOSP', 'HINDALCO', 'ADANIENT', 'HEROMOTOCO',
-                      'UPL', 'BAJAJ-AUTO', 'LTIM', 'SBILIFE'],
-            'SECTOR': ['Energy', 'IT', 'IT', 'Finance', 'Finance', 'Finance', 'Telecom', 
-                      'FMCG', 'Finance', 'Infra', 'FMCG', 'Finance', 'Paint', 'Auto',
-                      'Finance', 'Consumer', 'Cement', 'FMCG', 'Pharma', 'IT',
-                      'IT', 'Auto', 'Energy', 'Power', 'Power', 'Auto', 'Infra',
-                      'Finance', 'Pharma', 'IT', 'Energy', 'Pharma', 'Pharma', 'Cement',
-                      'Auto', 'FMCG', 'Cement', 'Finance', 'Energy', 'Metals',
-                      'FMCG', 'Metals', 'Healthcare', 'Metals', 'Diversified', 'Auto',
-                      'Chemicals', 'Auto', 'IT', 'Finance']
-        })
 
 def get_live_price(symbol):
     """Fetch live price with error handling"""
