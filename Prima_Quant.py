@@ -6,10 +6,10 @@ import ta
 import time
 import requests
 from datetime import datetime
-import io
+import secrets  # For generating unique hex keys
 
 # --- CONFIG ---
-st.set_page_config(page_title="PRIMA Terminal v7.8", layout="wide")
+st.set_page_config(page_title="PRIMA Terminal v7.9", layout="wide")
 
 # Telegram Broadcaster
 def broadcast(msg):
@@ -22,11 +22,20 @@ def broadcast(msg):
         except Exception:
             pass
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE INITIALIZATION (Fixed for FutureWarning) ---
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Side", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
 if 'history' not in st.session_state:
-    st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Reason"])
+    # Explicitly define columns and dtypes to avoid FutureWarning
+    st.session_state.history = pd.DataFrame({
+        "Time": pd.Series(dtype='str'),
+        "Symbol": pd.Series(dtype='str'),
+        "Side": pd.Series(dtype='str'),
+        "Entry": pd.Series(dtype='float'),
+        "Exit": pd.Series(dtype='float'),
+        "P&L": pd.Series(dtype='float'),
+        "Reason": pd.Series(dtype='str')
+    })
 if 'balance' not in st.session_state:
     st.session_state.balance = 50000.0
 
@@ -37,16 +46,21 @@ def close_position(row_id, reason="MANUAL KILL ⚔️"):
         row = st.session_state.portfolio.loc[idx]
         
         st.session_state.balance += (row['LTP'] * row['Qty'])
-        hist_entry = {
+        
+        # New trade data
+        new_history_row = pd.DataFrame([{
             "Time": datetime.now().strftime("%H:%M:%S"),
-            "Symbol": row['Symbol'],
-            "Side": row['Side'], 
-            "Entry": row['Entry'],
-            "Exit": row['LTP'],
-            "P&L": row['P&L'],
-            "Reason": reason
-        }
-        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([hist_entry])], ignore_index=True)
+            "Symbol": str(row['Symbol']),
+            "Side": str(row['Side']), 
+            "Entry": float(row['Entry']),
+            "Exit": float(row['LTP']),
+            "P&L": float(row['P&L']),
+            "Reason": str(reason)
+        }])
+        
+        # Append only if not empty to avoid the FutureWarning
+        st.session_state.history = pd.concat([st.session_state.history, new_history_row], ignore_index=True)
+        
         broadcast(f"*CLOSED:* {row['Symbol']} | P&L: ₹{row['P&L']} ({reason})")
         st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
         return True
@@ -55,29 +69,25 @@ def close_position(row_id, reason="MANUAL KILL ⚔️"):
 # --- SIDEBAR & GLOBAL CONTROLS ---
 with st.sidebar:
     st.header("🔱 Global Controls")
-    
     if st.button("🚨 GLOBAL KILL SWITCH", use_container_width=True, type="primary"):
         if not st.session_state.portfolio.empty:
-            # Create a copy of IDs to avoid "index changed during iteration" errors
             ids = st.session_state.portfolio['ID'].tolist()
             for rid in ids:
                 close_position(rid, "GLOBAL SHUTDOWN 🔌")
-            st.success("All positions closed.")
             st.rerun()
 
     st.header("⚙️ Strategy Tuning")
     rsi_threshold = st.slider("RSI Buy Zone", 10, 50, 30)
     vwap_dist_threshold = st.slider("VWAP Dist %", -5.0, -0.5, -1.5)
-    
     st.divider()
-    
-    # Export History Feature
-    if not st.session_state.history.empty:
-        csv = st.session_state.history.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 DOWNLOAD TRADE LOG", data=csv, file_name=f"PRIMA_Log_{datetime.now().date()}.csv", mime='text/csv', use_container_width=True)
+    if st.button("🗑️ CLEAR SESSION"):
+        st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Side", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
+        st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Reason"])
+        st.session_state.balance = 50000.0
+        st.rerun()
 
 # --- UI TABS ---
-st.title("🔱 PRIMA AUTONOMOUS COMMAND v7.8")
+st.title("🔱 PRIMA AUTONOMOUS COMMAND v7.9")
 m1, m2, m3 = st.columns(3)
 total_pnl = st.session_state.portfolio['P&L'].sum() if not st.session_state.portfolio.empty else 0
 m1.metric("Wallet", f"₹{round(st.session_state.balance, 2)}")
@@ -101,42 +111,37 @@ scan_placeholder = tab1.empty()
 
 # --- MAIN LOOP ---
 while True:
-    # 1. LIVE RISK MANAGEMENT (1-SEC)
+    # 1. LIVE RISK MANAGEMENT
     if not st.session_state.portfolio.empty:
         for idx, row in st.session_state.portfolio.iterrows():
             try:
                 ticker = yf.Ticker(f"{row['Symbol']}.NS")
                 current_ltp = ticker.fast_info['last_price']
                 st.session_state.portfolio.at[idx, 'LTP'] = round(current_ltp, 2)
-                pnl = (current_ltp - row['Entry']) * row['Qty']
-                st.session_state.portfolio.at[idx, 'P&L'] = round(pnl, 2)
+                st.session_state.portfolio.at[idx, 'P&L'] = round((current_ltp - row['Entry']) * row['Qty'], 2)
                 
-                # Check Auto-Exits
                 if current_ltp <= row['Stop']: 
                     close_position(row['ID'], "STOP LOSS 🛑")
                     st.rerun()
                 elif current_ltp >= row['Target']: 
                     close_position(row['ID'], "TARGET HIT 🎯")
                     st.rerun()
-            except Exception:
-                continue
+            except Exception: continue
 
-    # 2. POSITION CONTROL UI
+    # 2. POSITION CONTROL UI (Unique Hex Key Fix)
     with tab2:
         if st.session_state.portfolio.empty:
             st.info("No active trades.")
         else:
-            display_df = st.session_state.portfolio.copy()
-            if 'ID' in display_df.columns: display_df = display_df.drop(columns=['ID'])
+            display_df = st.session_state.portfolio.drop(columns=['ID']) if 'ID' in st.session_state.portfolio.columns else st.session_state.portfolio
             st.dataframe(display_df, width="stretch", hide_index=True)
-            
-            # Individual Kill Buttons
             for idx, row in st.session_state.portfolio.iterrows():
-                if st.button(f"KILL {row['Symbol']}", key=f"k_{row['ID']}"):
+                # We use the unique ID generated at entry as the key
+                if st.button(f"KILL {row['Symbol']}", key=f"btn_{row['ID']}"):
                     close_position(row['ID'])
                     st.rerun()
 
-    # 3. SCANNER ENGINE (60-SEC)
+    # 3. SCANNER ENGINE
     scan_results = []
     for item in master_list:
         sym = item['SYMBOL']
@@ -150,13 +155,10 @@ while True:
             vwap = ((df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()).iloc[-1]
             dist = ((cp - vwap) / vwap) * 100
             
-            # TRADE NOTIFICATION & ENTRY
             if rsi < rsi_threshold and dist < vwap_dist_threshold:
-                # Notify on Telegram even if we don't buy
-                broadcast(f"⚡ *MATCH:* {sym} (RSI: {round(rsi,1)})")
-                
                 if sym not in st.session_state.portfolio['Symbol'].values and st.session_state.balance > (cp * 10):
-                    uid = f"{sym}_{int(time.time())}"
+                    # UNIQUE ID: Symbol + Timestamp + Random Hex
+                    uid = f"{sym}_{int(time.time())}_{secrets.token_hex(3)}"
                     new_trade = {
                         "ID": uid, "Symbol": sym, "Side": "BUY", "Qty": 10, "Entry": cp, 
                         "LTP": cp, "P&L": 0.0, "Target": cp*1.03, "Stop": cp*0.985
@@ -166,8 +168,7 @@ while True:
                     broadcast(f"🚀 *ENTRY:* {sym} @ {cp}")
 
             scan_results.append({"Company": item['Company'], "Symbol": sym, "LTP": cp, "RSI": round(rsi,1)})
-        except Exception:
-            continue
+        except Exception: continue
         
     with scan_placeholder.container():
         st.dataframe(pd.DataFrame(scan_results), width="stretch", hide_index=True)
