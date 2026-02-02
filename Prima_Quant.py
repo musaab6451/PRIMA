@@ -85,6 +85,21 @@ with st.sidebar:
     scan_interval = st.slider("Scan Interval (seconds)", 30, 300, 120)
     
     st.divider()
+    st.subheader("🎯 Signal Filters")
+    min_price = st.number_input("Min Stock Price (₹)", value=50.0, min_value=1.0, help="Filter out penny stocks")
+    max_price = st.number_input("Max Stock Price (₹)", value=5000.0, min_value=100.0, help="Filter out very expensive stocks")
+    min_rsi = st.slider("Min RSI for entry", 0, 100, 25, help="Lower = more oversold")
+    max_rsi = st.slider("Max RSI for entry", 0, 100, 70, help="Upper limit for entry")
+    
+    st.divider()
+    st.subheader("🎯 Signal Filters")
+    min_price = st.number_input("Min Stock Price (₹)", value=50.0, min_value=1.0)
+    max_price = st.number_input("Max Stock Price (₹)", value=10000.0, min_value=1.0)
+    min_volume_ratio = st.slider("Min Volume Ratio", 0.5, 3.0, 1.0, 0.1)
+    
+    st.info(f"Scanning {len(master_df)} stocks")
+    
+    st.divider()
     st.subheader("📊 Strategy Performance")
     for strat, stats in st.session_state.strategy_stats.items():
         if stats['signals'] > 0 or stats['trades'] > 0:
@@ -161,13 +176,33 @@ def get_master_data():
         
         # Filter out invalid symbols
         processed_df = processed_df[processed_df['SYMBOL'].str.len() > 0]
-        return processed_df.head(100)
+        
+        # Remove stocks with special characters (bonds, warrants, etc)
+        processed_df = processed_df[~processed_df['SYMBOL'].str.contains('-', na=False)]
+        
+        # Scan ALL stocks - no limit
+        st.sidebar.info(f"📊 Universe: {len(processed_df)} stocks")
+        return processed_df
     except Exception as e:
         st.sidebar.warning(f"Using fallback stock list: {str(e)}")
-        # Fallback to major stocks
+        # Expanded fallback to top 50 liquid NSE stocks
         return pd.DataFrame({
-            'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT'],
-            'SECTOR': ['Energy', 'IT', 'IT', 'Finance', 'Finance', 'Finance', 'Telecom', 'FMCG', 'Finance', 'Infra']
+            'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 
+                      'ITC', 'KOTAKBANK', 'LT', 'HINDUNILVR', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
+                      'BAJFINANCE', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'SUNPHARMA', 'WIPRO',
+                      'HCLTECH', 'TATAMOTORS', 'ONGC', 'NTPC', 'POWERGRID', 'M&M', 'ADANIPORTS',
+                      'BAJAJFINSV', 'DRREDDY', 'TECHM', 'COALINDIA', 'CIPLA', 'DIVISLAB', 'GRASIM',
+                      'EICHERMOT', 'BRITANNIA', 'SHREECEM', 'INDUSINDBK', 'BPCL', 'JSWSTEEL',
+                      'TATACONSUM', 'TATASTEEL', 'APOLLOHOSP', 'HINDALCO', 'ADANIENT', 'HEROMOTOCO',
+                      'UPL', 'BAJAJ-AUTO', 'LTIM', 'SBILIFE'],
+            'SECTOR': ['Energy', 'IT', 'IT', 'Finance', 'Finance', 'Finance', 'Telecom', 
+                      'FMCG', 'Finance', 'Infra', 'FMCG', 'Finance', 'Paint', 'Auto',
+                      'Finance', 'Consumer', 'Cement', 'FMCG', 'Pharma', 'IT',
+                      'IT', 'Auto', 'Energy', 'Power', 'Power', 'Auto', 'Infra',
+                      'Finance', 'Pharma', 'IT', 'Energy', 'Pharma', 'Pharma', 'Cement',
+                      'Auto', 'FMCG', 'Cement', 'Finance', 'Energy', 'Metals',
+                      'FMCG', 'Metals', 'Healthcare', 'Metals', 'Diversified', 'Auto',
+                      'Chemicals', 'Auto', 'IT', 'Finance']
         })
 
 def get_live_price(symbol):
@@ -265,59 +300,64 @@ def check_strategy_signal(strategy, indicators, price):
     
     try:
         if strategy == "RSI Mean Reversion":
-            if indicators['rsi'] and indicators['rsi'] < 30:  # Oversold
+            # Relaxed from 30 to 35 for more signals
+            if indicators['rsi'] and indicators['rsi'] < 35:  # Oversold
                 target = price * 1.02  # 2% target
                 stop = price * 0.98    # 2% stop
                 return True, target, stop
                 
         elif strategy == "EMA Crossover (9/21)":
             if indicators['ema_9'] and indicators['ema_21']:
-                if indicators['ema_9'] > indicators['ema_21']:  # Bullish crossover
+                # Check if 9 is above 21 with some momentum
+                if indicators['ema_9'] > indicators['ema_21'] * 1.001:  # Slight buffer for noise
                     target = price * 1.025  # 2.5% target
                     stop = price * 0.985    # 1.5% stop
                     return True, target, stop
                     
         elif strategy == "Bollinger Mean Reversion":
-            if indicators['bb_lower'] and price < indicators['bb_lower']:  # Below lower band
-                target = indicators['bb_mid'] if indicators['bb_mid'] else price * 1.02
-                stop = price * 0.98
-                return True, target, stop
-                
+            if indicators['bb_lower'] and indicators['bb_mid']:
+                # Price near or below lower band
+                if price < indicators['bb_lower'] * 1.005:  # Within 0.5% of lower band
+                    target = indicators['bb_mid'] if indicators['bb_mid'] else price * 1.02
+                    stop = price * 0.98
+                    return True, target, stop
+                    
         elif strategy == "VWAP Scalping":
-            if indicators['vwap'] and price < indicators['vwap'] * 0.998:  # Slight discount to VWAP
-                target = indicators['vwap']
-                stop = price * 0.995
-                return True, target, stop
+            if indicators['vwap']:
+                # Relaxed from 0.998 to 0.999 for more signals
+                if price < indicators['vwap'] * 0.999:  # Slight discount to VWAP
+                    target = indicators['vwap'] * 1.005  # Small profit target
+                    stop = price * 0.995
+                    return True, target, stop
         
         elif strategy == "MACD Momentum":
-            # MACD crosses above signal line (bullish crossover)
-            if indicators['macd'] and indicators['macd_signal'] and indicators['macd_diff']:
-                if indicators['macd_diff'] > 0 and indicators['macd'] > 0:  # Bullish momentum
-                    target = price * 1.03  # 3% target
-                    stop = price * 0.98    # 2% stop
-                    return True, target, stop
+            # MACD histogram positive (bullish)
+            if indicators['macd_diff'] and indicators['macd_diff'] > 0:
+                target = price * 1.03  # 3% target
+                stop = price * 0.98    # 2% stop
+                return True, target, stop
         
         elif strategy == "Supertrend Breakout":
-            # Price breaks above Supertrend
+            # Price above Supertrend
             if indicators['supertrend'] and indicators['close'] > indicators['supertrend']:
-                if indicators['prev_close'] <= indicators['supertrend']:  # Fresh breakout
-                    target = price * 1.04  # 4% target
-                    stop = indicators['supertrend']  # Supertrend as stop
-                    return True, target, stop
+                target = price * 1.04  # 4% target
+                stop = indicators['supertrend'] * 0.995  # Slightly below Supertrend
+                return True, target, stop
         
         elif strategy == "Volume Breakout":
-            # High volume + price breakout
-            if indicators['volume_ratio'] > 2.0:  # 2x average volume
-                if indicators['rsi'] and indicators['rsi'] > 50:  # Bullish momentum
+            # Relaxed volume requirement from 2.0 to 1.5
+            if indicators['volume_ratio'] > 1.5:  # 1.5x average volume
+                if indicators['rsi'] and indicators['rsi'] > 45:  # Slight bullish momentum
                     target = price * 1.035  # 3.5% target
                     stop = price * 0.975    # 2.5% stop
                     return True, target, stop
         
         elif strategy == "Multi-Timeframe Trend":
-            # All EMAs aligned + strong trend (ADX > 25)
+            # All EMAs aligned (relaxed ADX requirement)
             if indicators['ema_9'] and indicators['ema_21'] and indicators['ema_50']:
                 if indicators['ema_9'] > indicators['ema_21'] > indicators['ema_50']:
-                    if indicators['adx'] and indicators['adx'] > 25:  # Strong trend
+                    # Removed strict ADX requirement for more signals
+                    if indicators['adx'] is None or indicators['adx'] > 20:  # Medium trend
                         target = price * 1.045  # 4.5% target
                         stop = price * 0.97     # 3% stop
                         return True, target, stop
@@ -422,16 +462,24 @@ with tab1:
     should_scan = manual_scan or (time.time() - st.session_state.last_scan > scan_interval)
     
     if should_scan:
-        with st.spinner("Scanning market..."):
+        with st.spinner(f"🔍 Scanning {len(master_df)} stocks..."):
             results = []
             progress_bar = st.progress(0)
+            status_text = st.empty()
+            scanned_count = 0
             
             for idx, stock in master_df.iterrows():
                 try:
                     sym = str(stock['SYMBOL'])
                     sector = str(stock['SECTOR'])
                     
-                    # Download recent data
+                    # Update progress every 25 stocks
+                    scanned_count += 1
+                    if scanned_count % 25 == 0:
+                        status_text.text(f"📊 Scanned {scanned_count}/{len(master_df)} | Found {len(results)} signals")
+                        progress_bar.progress(scanned_count / len(master_df))
+                    
+                    # Download recent data (increased from 2d to 5d for better indicators)
                     data = yf.download(f"{sym}.NS", period="5d", interval="15m", progress=False)
                     
                     if data.empty or len(data) < 20:
@@ -444,6 +492,15 @@ with tab1:
                         continue
                     
                     price = indicators['close']
+                    
+                    # Apply user filters
+                    if price < min_price or price > max_price:
+                        continue
+                    
+                    # RSI filter (if applicable to strategy)
+                    if indicators['rsi'] and (indicators['rsi'] < min_rsi or indicators['rsi'] > max_rsi):
+                        # Skip this stock - RSI outside acceptable range
+                        continue
                     
                     # Check strategy signal
                     signal, target, stop = check_strategy_signal(active_strat, indicators, price)
@@ -463,12 +520,13 @@ with tab1:
                             "Strategy": active_strat
                         })
                     
-                    progress_bar.progress((idx + 1) / len(master_df))
-                    
                 except Exception as e:
                     continue
             
+            # Cleanup progress indicators
             progress_bar.empty()
+            status_text.empty()
+            
             st.session_state.scan_results = results
             st.session_state.last_scan = time.time()
             
@@ -508,7 +566,17 @@ with tab1:
                         st.toast(msg, icon="✅")
             st.session_state.scan_results = []  # Clear after execution
     else:
-        st.info("No active signals. Click 'Scan Now' or wait for auto-scan.")
+        st.info(f"""
+        **No signals found yet** 
+        
+        Try:
+        - Lower Min Price (₹{min_price}) or raise Max Price (₹{max_price})
+        - Adjust RSI range ({min_rsi} to {max_rsi})
+        - Try different strategies (some work better in different conditions)
+        - Wait for next scan ({scan_interval}s interval)
+        
+        Scanning {len(master_df)} stocks across all NSE sectors.
+        """)
 
 # --- TAB 2: ACTIVE POSITIONS ---
 with tab2:
