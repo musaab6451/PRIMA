@@ -7,13 +7,34 @@ import time
 from datetime import datetime
 import secrets
 import plotly.express as px
+import requests
+
+# --- TELEGRAM CONFIG ---
+TELEGRAM_TOKEN = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
+TELEGRAM_CHAT_IDS = ["1303832128", "1287509530"]
+
+def send_telegram_msg(message):
+    """Sends a professional PRIMA alert to multiple users."""
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            params = {
+                "chat_id": chat_id, 
+                "text": f"🔱 *PRIMA ALERT*\n\n{message}", 
+                "parse_mode": "Markdown"
+            }
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code != 200:
+                print(f"Telegram error for {chat_id}: {response.text}")
+        except Exception as e:
+            print(f"Error sending to {chat_id}: {e}")
 
 # --- CONFIG ---
 st.set_page_config(page_title="PRIMA v9.4 | 2026 Fixed", layout="wide")
 
 # --- STATE INITIALIZATION (Must be first) ---
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
+    st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop", "Strategy"])
 if 'history' not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Entry", "Exit", "P&L"])
 if 'balance' not in st.session_state:
@@ -24,12 +45,30 @@ if 'scan_results' not in st.session_state:
     st.session_state.scan_results = []
 if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = True
+if 'strategy_stats' not in st.session_state:
+    st.session_state.strategy_stats = {
+        "RSI Mean Reversion": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "EMA Crossover (9/21)": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "Bollinger Mean Reversion": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "VWAP Scalping": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "MACD Momentum": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "Supertrend Breakout": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "Volume Breakout": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0},
+        "Multi-Timeframe Trend": {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0}
+    }
 
 # --- SIDEBAR: STRATEGY & RISK ---
 with st.sidebar:
     st.title("🔱 PRIMA Control")
     active_strat = st.selectbox("Trading Engine", 
-                                ["RSI Mean Reversion", "EMA Crossover (9/21)", "Bollinger Mean Reversion", "VWAP Scalping"])
+                                ["RSI Mean Reversion", 
+                                 "EMA Crossover (9/21)", 
+                                 "Bollinger Mean Reversion", 
+                                 "VWAP Scalping",
+                                 "MACD Momentum",
+                                 "Supertrend Breakout",
+                                 "Volume Breakout",
+                                 "Multi-Timeframe Trend"])
     
     st.divider()
     st.subheader("💰 Capital Control")
@@ -46,12 +85,30 @@ with st.sidebar:
     scan_interval = st.slider("Scan Interval (seconds)", 30, 300, 120)
     
     st.divider()
+    st.subheader("📊 Strategy Performance")
+    for strat, stats in st.session_state.strategy_stats.items():
+        if stats['signals'] > 0 or stats['trades'] > 0:
+            win_rate = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
+            with st.expander(f"{strat}"):
+                col1, col2 = st.columns(2)
+                col1.metric("Signals", stats['signals'])
+                col2.metric("Trades", stats['trades'])
+                col1.metric("Win Rate", f"{round(win_rate, 1)}%")
+                col2.metric("Total P&L", f"₹{round(stats['total_pnl'], 2)}")
+    
+    st.divider()
     if st.button("🚨 GLOBAL KILL SWITCH", type="primary", use_container_width=True):
         # Exit all positions at market price
         total_exit_value = 0
+        total_pnl = 0
+        positions_closed = []
+        
         for idx, row in st.session_state.portfolio.iterrows():
             exit_value = row['LTP'] * row['Qty']
             total_exit_value += exit_value
+            total_pnl += row['P&L']
+            positions_closed.append(f"{row['Symbol']}: ₹{round(row['P&L'], 2)}")
+            
             # Log to history
             new_history = pd.DataFrame([{
                 "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -62,8 +119,19 @@ with st.sidebar:
             }])
             st.session_state.history = pd.concat([st.session_state.history, new_history], ignore_index=True)
         
+        # Send Telegram notification
+        if positions_closed:
+            msg = f"🚨 *KILL SWITCH ACTIVATED*\n\n" \
+                  f"Total Positions Closed: {len(positions_closed)}\n" \
+                  f"Total P&L: ₹{round(total_pnl, 2)}\n" \
+                  f"Recovered: ₹{round(total_exit_value, 2)}\n\n" \
+                  f"Positions:\n" + "\n".join(positions_closed[:5])
+            if len(positions_closed) > 5:
+                msg += f"\n...and {len(positions_closed)-5} more"
+            send_telegram_msg(msg)
+        
         st.session_state.balance += total_exit_value
-        st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
+        st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Sector", "Qty", "Entry", "LTP", "P&L", "Target", "Stop", "Strategy"])
         st.success(f"All positions closed! ₹{round(total_exit_value, 2)} returned to balance")
         time.sleep(2)
         st.rerun()
@@ -131,6 +199,7 @@ def calculate_indicators(data):
         # EMA
         ema_9 = ta.trend.EMAIndicator(data['Close'], window=9).ema_indicator()
         ema_21 = ta.trend.EMAIndicator(data['Close'], window=21).ema_indicator()
+        ema_50 = ta.trend.EMAIndicator(data['Close'], window=50).ema_indicator()
         
         # Bollinger Bands
         bb = ta.volatility.BollingerBands(data['Close'], window=20, window_dev=2)
@@ -141,15 +210,50 @@ def calculate_indicators(data):
         # VWAP (approximation)
         vwap = (data['Volume'] * (data['High'] + data['Low'] + data['Close']) / 3).cumsum() / data['Volume'].cumsum()
         
+        # MACD
+        macd = ta.trend.MACD(data['Close'])
+        macd_line = macd.macd()
+        macd_signal = macd.macd_signal()
+        macd_diff = macd.macd_diff()
+        
+        # Supertrend (using ATR)
+        atr = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=10).average_true_range()
+        hl_avg = (data['High'] + data['Low']) / 2
+        multiplier = 3
+        upperband = hl_avg + (multiplier * atr)
+        lowerband = hl_avg - (multiplier * atr)
+        supertrend = pd.Series(index=data.index, dtype=float)
+        supertrend.iloc[0] = upperband.iloc[0]
+        for i in range(1, len(data)):
+            if data['Close'].iloc[i] > supertrend.iloc[i-1]:
+                supertrend.iloc[i] = lowerband.iloc[i]
+            else:
+                supertrend.iloc[i] = upperband.iloc[i]
+        
+        # Volume indicators
+        volume_sma = data['Volume'].rolling(window=20).mean()
+        volume_ratio = data['Volume'].iloc[-1] / volume_sma.iloc[-1] if volume_sma.iloc[-1] > 0 else 1
+        
+        # ADX (Trend Strength)
+        adx = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=14).adx()
+        
         return {
             'rsi': rsi.iloc[-1] if not rsi.empty else None,
             'ema_9': ema_9.iloc[-1] if not ema_9.empty else None,
             'ema_21': ema_21.iloc[-1] if not ema_21.empty else None,
+            'ema_50': ema_50.iloc[-1] if not ema_50.empty else None,
             'bb_upper': bb_upper.iloc[-1] if not bb_upper.empty else None,
             'bb_lower': bb_lower.iloc[-1] if not bb_lower.empty else None,
             'bb_mid': bb_mid.iloc[-1] if not bb_mid.empty else None,
             'vwap': vwap.iloc[-1] if not vwap.empty else None,
-            'close': float(data['Close'].iloc[-1])
+            'macd': macd_line.iloc[-1] if not macd_line.empty else None,
+            'macd_signal': macd_signal.iloc[-1] if not macd_signal.empty else None,
+            'macd_diff': macd_diff.iloc[-1] if not macd_diff.empty else None,
+            'supertrend': supertrend.iloc[-1] if not supertrend.empty else None,
+            'volume_ratio': volume_ratio,
+            'adx': adx.iloc[-1] if not adx.empty else None,
+            'close': float(data['Close'].iloc[-1]),
+            'prev_close': float(data['Close'].iloc[-2]) if len(data) > 1 else float(data['Close'].iloc[-1])
         }
     except Exception as e:
         return None
@@ -185,11 +289,44 @@ def check_strategy_signal(strategy, indicators, price):
                 stop = price * 0.995
                 return True, target, stop
         
+        elif strategy == "MACD Momentum":
+            # MACD crosses above signal line (bullish crossover)
+            if indicators['macd'] and indicators['macd_signal'] and indicators['macd_diff']:
+                if indicators['macd_diff'] > 0 and indicators['macd'] > 0:  # Bullish momentum
+                    target = price * 1.03  # 3% target
+                    stop = price * 0.98    # 2% stop
+                    return True, target, stop
+        
+        elif strategy == "Supertrend Breakout":
+            # Price breaks above Supertrend
+            if indicators['supertrend'] and indicators['close'] > indicators['supertrend']:
+                if indicators['prev_close'] <= indicators['supertrend']:  # Fresh breakout
+                    target = price * 1.04  # 4% target
+                    stop = indicators['supertrend']  # Supertrend as stop
+                    return True, target, stop
+        
+        elif strategy == "Volume Breakout":
+            # High volume + price breakout
+            if indicators['volume_ratio'] > 2.0:  # 2x average volume
+                if indicators['rsi'] and indicators['rsi'] > 50:  # Bullish momentum
+                    target = price * 1.035  # 3.5% target
+                    stop = price * 0.975    # 2.5% stop
+                    return True, target, stop
+        
+        elif strategy == "Multi-Timeframe Trend":
+            # All EMAs aligned + strong trend (ADX > 25)
+            if indicators['ema_9'] and indicators['ema_21'] and indicators['ema_50']:
+                if indicators['ema_9'] > indicators['ema_21'] > indicators['ema_50']:
+                    if indicators['adx'] and indicators['adx'] > 25:  # Strong trend
+                        target = price * 1.045  # 4.5% target
+                        stop = price * 0.97     # 3% stop
+                        return True, target, stop
+        
         return False, None, None
     except:
         return False, None, None
 
-def execute_trade(symbol, sector, price, qty, target, stop):
+def execute_trade(symbol, sector, price, qty, target, stop, strategy):
     """Execute a trade and add to portfolio"""
     trade_value = price * qty
     
@@ -220,11 +357,27 @@ def execute_trade(symbol, sector, price, qty, target, stop):
         "LTP": round(price, 2),
         "P&L": 0.0,
         "Target": round(target, 2),
-        "Stop": round(stop, 2)
+        "Stop": round(stop, 2),
+        "Strategy": strategy
     }])
     
     st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_position], ignore_index=True)
     st.session_state.balance -= trade_value
+    
+    # Track strategy stats
+    st.session_state.strategy_stats[strategy]['trades'] += 1
+    
+    # Send Telegram notification
+    msg = f"📈 *BUY SIGNAL*\n" \
+          f"Strategy: {strategy}\n" \
+          f"Symbol: `{symbol}`\n" \
+          f"Sector: {sector}\n" \
+          f"Entry: ₹{round(price, 2)}\n" \
+          f"Quantity: {qty}\n" \
+          f"Target: ₹{round(target, 2)}\n" \
+          f"Stop Loss: ₹{round(stop, 2)}\n" \
+          f"Investment: ₹{round(trade_value, 2)}"
+    send_telegram_msg(msg)
     
     return True, f"Trade executed: {symbol} @ ₹{round(price, 2)}"
 
@@ -296,6 +449,9 @@ with tab1:
                     signal, target, stop = check_strategy_signal(active_strat, indicators, price)
                     
                     if signal:
+                        # Track signal count
+                        st.session_state.strategy_stats[active_strat]['signals'] += 1
+                        
                         results.append({
                             "Symbol": sym,
                             "Sector": sector,
@@ -303,7 +459,8 @@ with tab1:
                             "Target": round(target, 2) if target else 0,
                             "Stop": round(stop, 2) if stop else 0,
                             "RSI": round(indicators['rsi'], 2) if indicators['rsi'] else 0,
-                            "Signal": "BUY"
+                            "Signal": "BUY",
+                            "Strategy": active_strat
                         })
                     
                     progress_bar.progress((idx + 1) / len(master_df))
@@ -314,6 +471,19 @@ with tab1:
             progress_bar.empty()
             st.session_state.scan_results = results
             st.session_state.last_scan = time.time()
+            
+            # Send Telegram notification if signals found
+            if results:
+                top_signals = results[:3]  # Top 3 signals
+                signal_list = "\n".join([f"• {s['Symbol']} @ ₹{s['Price']} (Target: ₹{s['Target']})" for s in top_signals])
+                msg = f"🔍 *SCAN COMPLETE*\n\n" \
+                      f"Strategy: {active_strat}\n" \
+                      f"Signals Found: {len(results)}\n\n" \
+                      f"Top Picks:\n{signal_list}"
+                if len(results) > 3:
+                    msg += f"\n\n...and {len(results)-3} more signals"
+                send_telegram_msg(msg)
+            
             st.success(f"Scan complete! Found {len(results)} signals")
     
     # Display scan results
@@ -331,7 +501,8 @@ with tab1:
                         signal['Price'],
                         qty,
                         signal['Target'],
-                        signal['Stop']
+                        signal['Stop'],
+                        signal['Strategy']
                     )
                     if success:
                         st.toast(msg, icon="✅")
@@ -359,6 +530,10 @@ with tab2:
                         # Stop loss hit
                         st.session_state.balance += (ltp * row['Qty'])
                         
+                        # Track strategy stats (loss)
+                        if 'Strategy' in row and row['Strategy'] in st.session_state.strategy_stats:
+                            st.session_state.strategy_stats[row['Strategy']]['total_pnl'] += pnl
+                        
                         # Log to history
                         new_history = pd.DataFrame([{
                             "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -368,6 +543,15 @@ with tab2:
                             "P&L": pnl
                         }])
                         st.session_state.history = pd.concat([st.session_state.history, new_history], ignore_index=True)
+                        
+                        # Send Telegram notification
+                        msg = f"🛑 *STOP LOSS HIT*\n" \
+                              f"Symbol: `{row['Symbol']}`\n" \
+                              f"Entry: ₹{round(row['Entry'], 2)}\n" \
+                              f"Exit: ₹{round(ltp, 2)}\n" \
+                              f"P&L: ₹{round(pnl, 2)}\n" \
+                              f"Loss: {round((pnl/row['Entry']/row['Qty'])*100, 2)}%"
+                        send_telegram_msg(msg)
                         
                         st.session_state.portfolio = st.session_state.portfolio.drop(idx)
                         st.toast(f"🛑 Stop Loss: {row['Symbol']} @ ₹{round(ltp, 2)}", icon="🔴")
@@ -377,6 +561,11 @@ with tab2:
                         # Target hit
                         st.session_state.balance += (ltp * row['Qty'])
                         
+                        # Track strategy stats (win)
+                        if 'Strategy' in row and row['Strategy'] in st.session_state.strategy_stats:
+                            st.session_state.strategy_stats[row['Strategy']]['wins'] += 1
+                            st.session_state.strategy_stats[row['Strategy']]['total_pnl'] += pnl
+                        
                         # Log to history
                         new_history = pd.DataFrame([{
                             "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -386,6 +575,15 @@ with tab2:
                             "P&L": pnl
                         }])
                         st.session_state.history = pd.concat([st.session_state.history, new_history], ignore_index=True)
+                        
+                        # Send Telegram notification
+                        msg = f"🎯 *TARGET HIT*\n" \
+                              f"Symbol: `{row['Symbol']}`\n" \
+                              f"Entry: ₹{round(row['Entry'], 2)}\n" \
+                              f"Exit: ₹{round(ltp, 2)}\n" \
+                              f"P&L: ₹{round(pnl, 2)}\n" \
+                              f"Profit: {round((pnl/row['Entry']/row['Qty'])*100, 2)}%"
+                        send_telegram_msg(msg)
                         
                         st.session_state.portfolio = st.session_state.portfolio.drop(idx)
                         st.toast(f"🎯 Target Hit: {row['Symbol']} @ ₹{round(ltp, 2)}", icon="🟢")
@@ -419,6 +617,15 @@ with tab2:
                         "P&L": row['P&L']
                     }])
                     st.session_state.history = pd.concat([st.session_state.history, new_history], ignore_index=True)
+                    
+                    # Send Telegram notification
+                    msg = f"🔄 *MANUAL EXIT*\n" \
+                          f"Symbol: `{row['Symbol']}`\n" \
+                          f"Entry: ₹{round(row['Entry'], 2)}\n" \
+                          f"Exit: ₹{round(row['LTP'], 2)}\n" \
+                          f"P&L: ₹{round(row['P&L'], 2)}\n" \
+                          f"Return: {round((row['P&L']/(row['Entry']*row['Qty']))*100, 2)}%"
+                    send_telegram_msg(msg)
                     
                     st.session_state.portfolio = st.session_state.portfolio.drop(idx)
                     st.rerun()
