@@ -11,7 +11,7 @@ import json
 
 # --- KITE CONFIG (From image_2d7620.png) ---
 API_KEY = "pcngqkv3k0i0i35o" 
-API_SECRET = "4m8oueyj8m4e44qaym3e1kla6rfptn27"
+API_SECRET = "4m8oueyj8m4e44qaym3elkla6rfptn27"
 
 # --- TELEGRAM CONFIG ---
 TELEGRAM_TOKEN = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
