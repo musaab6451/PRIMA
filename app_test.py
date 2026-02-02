@@ -153,7 +153,14 @@ def calculate_indicators(data):
     """Calculate technical indicators"""
     try:
         if len(data) < 30:
-            return None
+            return {
+            'rsi': float(rsi.item()) if hasattr(rsi, 'item') else float(rsi),
+            'ema_9': float(ema_9.item()) if hasattr(ema_9, 'item') else float(ema_9),
+            'ema_21': float(ema_21.item()) if hasattr(ema_21, 'item') else float(ema_21),
+            'vwap': float(vwap.iloc[-1].item()) if hasattr(vwap.iloc[-1], 'item') else float(vwap.iloc[-1]),
+            'close': float(close.iloc[-1].item()) if hasattr(close.iloc[-1], 'item') else float(close.iloc[-1]),
+            'prev_close': float(close.iloc[-2].item()) if hasattr(close.iloc[-2], 'item') else float(close.iloc[-2])
+        }
         
         # RSI
         rsi = ta.momentum.RSIIndicator(data['Close'], window=14).rsi()
@@ -547,3 +554,4 @@ with tab4:
 if st.session_state.auto_refresh and not st.session_state.portfolio.empty:
     time.sleep(2)  # Refresh every 2 seconds
     st.rerun()
+
