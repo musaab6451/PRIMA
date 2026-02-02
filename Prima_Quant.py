@@ -8,26 +8,38 @@ import requests
 from datetime import datetime
 
 # --- CONFIG & STYLING ---
-st.set_page_config(page_title="PRIMA Terminal v7.5", layout="wide")
+st.set_page_config(page_title="PRIMA Terminal v7.6", layout="wide")
+
+# --- SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Strategy Settings")
+    rsi_threshold = st.slider("RSI Buy Threshold", 10, 50, 30)
+    vwap_dist_threshold = st.slider("VWAP Dist % (Negative)", -5.0, -0.5, -1.5)
+    stop_loss_val = st.slider("Stop Loss %", 0.5, 5.0, 1.5)
+    target_val = st.slider("Target Profit %", 1.0, 10.0, 3.0)
+    st.divider()
+    if st.button("RESET SESSION"):
+        st.session_state.clear()
+        st.rerun()
 
 # Telegram Broadcaster
 def broadcast(msg):
     token = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
-    chat_ids = ["1303832128","1287509530"] # Add your IDs
+    chat_ids = ["1303832128","1287509530"] 
     for cid in chat_ids:
-        try: requests.get(f"https://api.telegram.org/bot{token}/sendMessage", 
-                          params={"chat_id": cid, "text": f"🔱 PRIMA: {msg}", "parse_mode": "Markdown"}, timeout=1)
+        try:
+            requests.get(f"https://api.telegram.org/bot{token}/sendMessage", 
+                         params={"chat_id": cid, "text": f"🔱 PRIMA: {msg}", "parse_mode": "Markdown"}, timeout=1)
         except: pass
 
 # --- SESSION STATE ---
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["Symbol", "Side", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
+    st.session_state.portfolio = pd.DataFrame(columns=["ID", "Symbol", "Side", "Qty", "Entry", "LTP", "P&L", "Target", "Stop"])
 if 'history' not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Reason"])
 if 'balance' not in st.session_state:
     st.session_state.balance = 50000.0
 
-# --- STYLING HELPERS ---
 def style_pnl(val):
     color = 'green' if val > 0 else 'red' if val < 0 else 'white'
     return f'color: {color}; font-weight: bold'
@@ -41,18 +53,21 @@ def get_100_symbols():
     df = df.rename(columns={name_col: 'Company'})
     return df[['SYMBOL', 'Company']].head(100).to_dict('records')
 
-def close_position(idx, reason="MANUAL KILL ⚔️"):
+def close_position(row_id, reason="MANUAL KILL ⚔️"):
+    # Find the specific row by its unique ID
+    idx = st.session_state.portfolio[st.session_state.portfolio['ID'] == row_id].index[0]
     row = st.session_state.portfolio.loc[idx]
+    
     st.session_state.balance += (row['LTP'] * row['Qty'])
     hist_entry = {"Time": datetime.now().strftime("%H:%M"), "Symbol": row['Symbol'], "Side": row['Side'], 
                   "Entry": row['Entry'], "Exit": row['LTP'], "P&L": row['P&L'], "Reason": reason}
     st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([hist_entry])], ignore_index=True)
-    broadcast(f"*CLOSED:* {row['Symbol']} @ {row['LTP']} | Result: ₹{row['P&L']} ({reason})")
+    broadcast(f"*CLOSED:* {row['Symbol']} @ {row['LTP']} | P&L: ₹{row['P&L']} ({reason})")
     st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
     st.rerun()
 
 # --- UI LAYOUT ---
-st.title("🔱 PRIMA AUTONOMOUS COMMAND v7.5")
+st.title("🔱 PRIMA AUTONOMOUS COMMAND v7.6")
 m1, m2, m3 = st.columns(3)
 total_pnl = st.session_state.portfolio['P&L'].sum() if not st.session_state.portfolio.empty else 0
 m1.metric("Wallet Balance", f"₹{round(st.session_state.balance, 2)}")
@@ -76,23 +91,21 @@ while True:
             st.session_state.portfolio.at[idx, 'P&L'] = round(pnl, 2)
             
             # Auto-Exit Logic
-            if current_ltp <= row['Stop']: close_position(idx, "STOP LOSS 🛑")
-            elif current_ltp >= row['Target']: close_position(idx, "TARGET HIT 🎯")
+            if current_ltp <= row['Stop']: close_position(row['ID'], "STOP LOSS 🛑")
+            elif current_ltp >= row['Target']: close_position(row['ID'], "TARGET HIT 🎯")
 
-    # 2. POSITION CONTROL (Tab 2)
+    # 2. POSITION CONTROL (Unique Key Fix)
     with tab2:
         if st.session_state.portfolio.empty:
             st.info("No active positions.")
         else:
-            # Styled Table
-            st.dataframe(st.session_state.portfolio.style.map(style_pnl, subset=['P&L']), width="stretch", hide_index=True)
-            # Individual Kill Switches
-            cols = st.columns(len(st.session_state.portfolio))
-            for i, (idx, row) in enumerate(st.session_state.portfolio.iterrows()):
-                if cols[i].button(f"KILL {row['Symbol']}", key=f"kill_{row['Symbol']}"):
-                    close_position(idx)
+            st.dataframe(st.session_state.portfolio.drop(columns=['ID']).style.map(style_pnl, subset=['P&L']), width="stretch", hide_index=True)
+            # Create unique buttons using ID
+            for idx, row in st.session_state.portfolio.iterrows():
+                if st.button(f"KILL {row['Symbol']} (ID: {row['ID']})", key=f"kill_{row['ID']}"):
+                    close_position(row['ID'])
 
-    # 3. SCANNER (Batch Processing into Single Table)
+    # 3. SCANNER
     scan_results = []
     for item in master_list:
         sym = item['SYMBOL']
@@ -106,20 +119,22 @@ while True:
             vwap = ((df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()).iloc[-1]
             dist = ((cp - vwap) / vwap) * 100
             
-            # STRATEGY SATISFIED NOTIFICATION
-            if rsi < 30 and dist < -1.5:
-                broadcast(f"⚡ *STRATEGY MATCH:* {sym} (RSI: {round(rsi,1)}) is in Buy Zone.")
+            # Use Sidebar thresholds
+            if rsi < rsi_threshold and dist < vwap_dist_threshold:
                 if sym not in st.session_state.portfolio['Symbol'].values and st.session_state.balance > (cp * 10):
-                    # AUTO-ENTRY
-                    new_trade = {"Symbol": sym, "Side": "BUY", "Qty": 10, "Entry": cp, "LTP": cp, "P&L": 0.0, "Target": cp*1.03, "Stop": cp*0.985}
+                    # UNIQUE ID GENERATION
+                    unique_id = f"{sym}_{int(time.time())}"
+                    new_trade = {
+                        "ID": unique_id, "Symbol": sym, "Side": "BUY", "Qty": 10, "Entry": cp, 
+                        "LTP": cp, "P&L": 0.0, "Target": cp * (1 + target_val/100), "Stop": cp * (1 - stop_loss_val/100)
+                    }
                     st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
                     st.session_state.balance -= (cp * 10)
-                    broadcast(f"🚀 *ENTRY:* Bought {sym} @ {cp}")
+                    broadcast(f"🚀 *ENTRY:* {sym} @ {cp}")
 
             scan_results.append({"Company": item['Company'], "Symbol": sym, "LTP": cp, "RSI": round(rsi,1)})
         except: continue
         
-    # Update single scanner table
     with scan_placeholder.container():
         st.dataframe(pd.DataFrame(scan_results), width="stretch", hide_index=True)
     
