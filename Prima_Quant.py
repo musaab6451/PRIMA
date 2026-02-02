@@ -111,9 +111,12 @@ def calculate_indicators(data):
         vwap = (data['Volume'] * (data['High'] + data['Low'] + data['Close']) / 3).cumsum() / data['Volume'].cumsum()
         
         return {
-            'rsi': float(rsi), 'ema_9': float(ema_9), 'ema_21': float(ema_21),
-            'vwap': float(vwap.iloc[-1]), 'close': float(close.iloc[-1]),
-            'prev_close': float(close.iloc[-2])
+            'rsi': float(rsi.item()) if hasattr(rsi, 'item') else float(rsi),
+            'ema_9': float(ema_9.item()) if hasattr(ema_9, 'item') else float(ema_9),
+            'ema_21': float(ema_21.item()) if hasattr(ema_21, 'item') else float(ema_21),
+            'vwap': float(vwap.iloc[-1].item()) if hasattr(vwap.iloc[-1], 'item') else float(vwap.iloc[-1]),
+            'close': float(close.iloc[-1].item()) if hasattr(close.iloc[-1], 'item') else float(close.iloc[-1]),
+            'prev_close': float(close.iloc[-2].item()) if hasattr(close.iloc[-2], 'item') else float(close.iloc[-2])
         }
     except: return None
 
