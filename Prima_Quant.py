@@ -85,17 +85,20 @@ with st.sidebar:
     scan_interval = st.slider("Scan Interval (seconds)", 30, 300, 120)
     
     st.divider()
-    st.subheader("🎯 Signal Filters")
+    st.subheader("🎯 RSI Filters")
     min_price = st.number_input("Min Stock Price (₹)", value=50.0, min_value=1.0, help="Filter out penny stocks")
     max_price = st.number_input("Max Stock Price (₹)", value=5000.0, min_value=100.0, help="Filter out very expensive stocks")
     min_rsi = st.slider("Min RSI for entry", 0, 100, 25, help="Lower = more oversold")
     max_rsi = st.slider("Max RSI for entry", 0, 100, 70, help="Upper limit for entry")
     
     st.divider()
-    st.subheader("🎯 Signal Filters")
+    st.subheader("🎯 Volume Filters")
     min_price = st.number_input("Min Stock Price (₹)", value=50.0, min_value=1.0)
     max_price = st.number_input("Max Stock Price (₹)", value=10000.0, min_value=1.0)
     min_volume_ratio = st.slider("Min Volume Ratio", 0.5, 3.0, 1.0, 0.1)
+
+    # --- LOAD MASTER DATA ---
+    master_df = get_master_data()
     
     st.info(f"Scanning {len(master_df)} stocks")
     
@@ -419,9 +422,6 @@ def execute_trade(symbol, sector, price, qty, target, stop, strategy):
     send_telegram_msg(msg)
     
     return True, f"Trade executed: {symbol} @ ₹{round(price, 2)}"
-
-# --- LOAD MASTER DATA ---
-master_df = get_master_data()
 
 # --- REAL-TIME HEADER ---
 current_pos_val = 0.0
