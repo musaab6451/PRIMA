@@ -15,14 +15,16 @@ INITIAL_BALANCE = 50000.0
 STOP_LOSS_PCT = 1.5  
 TAKE_PROFIT_PCT = 3.0 
 
-# TELEGRAM
+# TELEGRAM BROADCAST
 def broadcast(msg):
     token = "8563714849:AAGYRRGGQupxvvU16RHovQ5QSMOd6vkSS_o"
     chat_ids = ["1303832128","1287509530"] 
     for cid in chat_ids:
-        try: requests.get(f"https://api.telegram.org/bot{token}/sendMessage", 
-                          params={"chat_id": cid, "text": f"🔱 PRIMA: {msg}"}, timeout=1)
-        except: pass
+        try:
+            requests.get(f"https://api.telegram.org/bot{token}/sendMessage", 
+                         params={"chat_id": cid, "text": f"🔱 PRIMA: {msg}"}, timeout=1)
+        except:
+            pass
 
 # --- SESSION STATE ---
 if 'portfolio' not in st.session_state:
@@ -35,14 +37,27 @@ if 'balance' not in st.session_state:
 # --- DATA ENGINES ---
 @st.cache_data(ttl=86400)
 def get_100_symbols():
-    df = capital_market.equity_list()
-    return df[['SYMBOL', 'NAME_OF_COMPANY']].head(100).to_dict('records')
+    try:
+        df = capital_market.equity_list()
+        
+        # COLUMN NAME FIX: Detect the correct header for the Company Name
+        possible_headers = ['NAME_OF_COMPANY', 'NAME OF COMPANY', 'NAME', 'SYMBOL NAME']
+        name_col = next((col for col in possible_headers if col in df.columns), None)
+        
+        if name_col:
+            df = df.rename(columns={name_col: 'Company_Name'})
+        else:
+            df['Company_Name'] = df['SYMBOL'] # Fallback if no name found
+            
+        return df[['SYMBOL', 'Company_Name']].head(100).to_dict('records')
+    except Exception as e:
+        return [{"SYMBOL": "RELIANCE", "Company_Name": "RELIANCE INDUSTRIES LTD"}]
 
 def manage_risk():
-    if st.session_state.portfolio.empty: return
+    if st.session_state.portfolio.empty:
+        return
     for idx, row in st.session_state.portfolio.iterrows():
         try:
-            # Fast fetch for LTP
             ticker = yf.Ticker(f"{row['Symbol']}.NS")
             current_ltp = ticker.fast_info['last_price']
             
@@ -50,7 +65,6 @@ def manage_risk():
             pnl = (current_ltp - row['Entry']) * row['Qty'] if row['Side'] == "BUY" else (row['Entry'] - current_ltp) * row['Qty']
             st.session_state.portfolio.at[idx, 'P&L'] = round(pnl, 2)
 
-            # RISK CHECK
             reason = ""
             if current_ltp <= row['Stop']: reason = "STOP LOSS 🛑"
             elif current_ltp >= row['Target']: reason = "TARGET HIT 🎯"
@@ -63,10 +77,11 @@ def manage_risk():
                 broadcast(f"CLOSED: {row['Symbol']} @ {round(current_ltp,2)} ({reason})")
                 st.session_state.portfolio = st.session_state.portfolio.drop(idx)
                 st.rerun()
-        except: continue
+        except:
+            continue
 
 # --- UI ---
-st.title("🔱 PRIMA HIGH-SPEED TERMINAL v7.1")
+st.title("🔱 PRIMA HIGH-SPEED TERMINAL v7.2")
 m1, m2, m3 = st.columns(3)
 total_pnl = st.session_state.portfolio['P&L'].sum() if not st.session_state.portfolio.empty else 0
 m1.metric("Wallet Balance", f"₹{round(st.session_state.balance, 2)}")
@@ -87,7 +102,7 @@ while True:
     with tab3:
         st.dataframe(st.session_state.history, width="stretch", hide_index=True)
 
-    # 2. FULL SCANNER (Batch Process)
+    # 2. BATCH SCANNER
     scan_data = []
     progress_bar = st.progress(0)
     
@@ -97,29 +112,33 @@ while True:
         try:
             df = yf.download(f"{sym}.NS", period="5d", interval="15m", progress=False)
             if df.empty: continue
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
             cp = float(df['Close'].iloc[-1])
             rsi = ta.momentum.RSIIndicator(df['Close']).rsi().iloc[-1]
             vwap = ((df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()).iloc[-1]
             dist = ((cp - vwap) / vwap) * 100
             
-            # AUTOMATIC BUY LOGIC
-            if rsi < 30 and dist < -1.5 and st.session_state.balance > (cp * 10):
-                if sym not in st.session_state.portfolio['Symbol'].values:
-                    qty = 10
-                    new_trade = {"Symbol": sym, "Side": "BUY", "Qty": qty, "Entry": cp, "LTP": cp, 
-                                 "P&L": 0.0, "Target": cp*1.03, "Stop": cp*0.985}
-                    st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
-                    st.session_state.balance -= (cp * qty)
-                    broadcast(f"BUY EXECUTION: {sym} @ {cp}")
+            # AUTOMATIC BUY LOGIC (RSI < 40 Filter for better visibility)
+            if rsi < 40:
+                if rsi < 30 and dist < -1.5 and st.session_state.balance > (cp * 10):
+                    if sym not in st.session_state.portfolio['Symbol'].values:
+                        qty = 10
+                        new_trade = {"Symbol": sym, "Side": "BUY", "Qty": qty, "Entry": cp, "LTP": cp, 
+                                     "P&L": 0.0, "Target": cp*1.03, "Stop": cp*0.985}
+                        st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_trade])], ignore_index=True)
+                        st.session_state.balance -= (cp * qty)
+                        broadcast(f"BUY EXECUTION: {sym} @ {cp}")
 
-            scan_data.append({"Company": item['NAME_OF_COMPANY'], "Symbol": sym, "LTP": cp, "RSI": round(rsi,1)})
-        except: continue
+                scan_data.append({"Company": item['Company_Name'], "Symbol": sym, "LTP": cp, "RSI": round(rsi,1)})
+        except:
+            continue
     
-    # After full scan, update the Market Watch table
-    with scan_placeholder.container():
-        st.dataframe(pd.DataFrame(scan_data), width="stretch", hide_index=True)
+    # Update the Market Watch table once the full batch is ready
+    if scan_data:
+        with scan_placeholder.container():
+            st.dataframe(pd.DataFrame(scan_data), width="stretch", hide_index=True)
     
     progress_bar.empty()
-    time.sleep(1) # Small rest between full scan cycles
+    time.sleep(1)
