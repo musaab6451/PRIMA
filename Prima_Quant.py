@@ -181,7 +181,6 @@ def get_master_data():
         processed_df = processed_df[~processed_df['SYMBOL'].str.contains('-', na=False)]
         
         # Scan ALL stocks - no limit
-        st.sidebar.info(f"📊 Universe: {len(processed_df)} stocks")
         return processed_df
     except Exception as e:
         st.sidebar.warning(f"Using fallback stock list: {str(e)}")
@@ -435,6 +434,8 @@ if not st.session_state.portfolio.empty:
 total_equity = st.session_state.balance + current_pos_val
 
 st.title("🔱 PRIMA COMMAND v9.4")
+st.caption(f"📊 Scanning {len(master_df)} NSE stocks | Strategy: {active_strat}")
+
 h1, h2, h3, h4 = st.columns(4)
 h1.metric("Cash Balance", f"₹{round(st.session_state.balance, 2)}")
 h2.metric("Portfolio Value", f"₹{round(current_pos_val, 2)}")
