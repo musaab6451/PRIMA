@@ -8,7 +8,7 @@ import secrets
 import requests
 import json
 import threading
-from queue import Queue
+from collections import defaultdict
 
 # --- KITE CONFIG ---
 API_KEY = "2kcgsxf407fpuvif" 
@@ -22,82 +22,184 @@ def send_telegram_msg(message):
     for chat_id in TELEGRAM_CHAT_IDS:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            params = {"chat_id": chat_id, "text": f"🔱 *PRIMA v12*\n\n{message}", "parse_mode": "Markdown"}
+            params = {"chat_id": chat_id, "text": f"🔱 *PRIMA v13*\n\n{message}", "parse_mode": "Markdown"}
             requests.get(url, params=params, timeout=5)
         except: pass
 
-# --- CONFIG ---
-st.set_page_config(page_title="PRIMA v12.0 | Real-Time Terminal", layout="wide")
+# --- PROFESSIONAL UI CONFIG ---
+st.set_page_config(
+    page_title="PRIMA v13 | Professional Terminal", 
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': "PRIMA v13.0 - Professional Algorithmic Trading Terminal"
+    }
+)
 
-# --- PERSISTENT STORAGE ---
-def save_state():
-    try:
-        state = {
-            'portfolio': st.session_state.portfolio.to_dict('records') if not st.session_state.portfolio.empty else [],
-            'history': st.session_state.history.to_dict('records') if not st.session_state.history.empty else [],
-            'balance': float(st.session_state.balance),
-            'strategy_stats': st.session_state.strategy_stats,
-            'access_token': st.session_state.get('access_token', ''),
-            'bot_active': st.session_state.get('bot_active', False)
-        }
-        with open('/tmp/prima_v12_state.json', 'w') as f:
-            json.dump(state, f)
-    except: pass
+# Custom CSS for professional look
+st.markdown("""
+<style>
+    /* Main container */
+    .main {
+        background-color: #0e1117;
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        font-size: 28px;
+        font-weight: 700;
+    }
+    
+    /* Tables */
+    .dataframe {
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 12px;
+    }
+    
+    /* Headers */
+    h1 {
+        color: #00ff88;
+        font-weight: 800;
+        letter-spacing: 2px;
+    }
+    
+    h2, h3 {
+        color: #00ccff;
+        font-weight: 600;
+    }
+    
+    /* Status indicators */
+    .status-live {
+        color: #00ff88;
+        font-weight: bold;
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        font-weight: 600;
+        border-radius: 8px;
+        transition: all 0.3s;
+    }
+    
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,255,136,0.3);
+    }
+</style>
+""", unsafe_allow_html=True)
 
-def load_state():
+# --- STATE MANAGEMENT ---
+def init_session_state():
+    if 'kite' not in st.session_state:
+        st.session_state.kite = KiteConnect(api_key=API_KEY)
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'access_token' not in st.session_state:
+        st.session_state.access_token = None
+    if 'instrument_map' not in st.session_state:
+        st.session_state.instrument_map = {}
+    if 'token_to_symbol' not in st.session_state:
+        st.session_state.token_to_symbol = {}
+    if 'live_data' not in st.session_state:
+        st.session_state.live_data = {}
+    if 'market_status' not in st.session_state:
+        st.session_state.market_status = "UNKNOWN"
+    if 'zerodha_positions' not in st.session_state:
+        st.session_state.zerodha_positions = pd.DataFrame()
+    if 'zerodha_holdings' not in st.session_state:
+        st.session_state.zerodha_holdings = pd.DataFrame()
+    if 'zerodha_funds' not in st.session_state:
+        st.session_state.zerodha_funds = {}
+    if 'stock_universe' not in st.session_state:
+        st.session_state.stock_universe = pd.DataFrame()
+    if 'websocket_active' not in st.session_state:
+        st.session_state.websocket_active = False
+    if 'bot_active' not in st.session_state:
+        st.session_state.bot_active = False
+    if 'last_sync' not in st.session_state:
+        st.session_state.last_sync = 0
+
+init_session_state()
+
+# --- ZERODHA ACCOUNT SYNC ---
+def sync_zerodha_account():
+    """Sync live Zerodha account data"""
     try:
-        with open('/tmp/prima_v12_state.json', 'r') as f:
-            state = json.load(f)
-        if state['portfolio']:
-            st.session_state.portfolio = pd.DataFrame(state['portfolio'])
-        if state['history']:
-            st.session_state.history = pd.DataFrame(state['history'])
-        st.session_state.balance = float(state['balance'])
-        st.session_state.strategy_stats = state['strategy_stats']
-        st.session_state.bot_active = state.get('bot_active', False)
-        if state.get('access_token'):
-            st.session_state.access_token = state['access_token']
-            st.session_state.kite.set_access_token(state['access_token'])
-            st.session_state.authenticated = True
+        # Get positions
+        positions = st.session_state.kite.positions()
+        if positions and 'net' in positions:
+            pos_data = []
+            for p in positions['net']:
+                if p['quantity'] != 0:
+                    pos_data.append({
+                        'Symbol': p['tradingsymbol'],
+                        'Qty': p['quantity'],
+                        'Avg Price': p['average_price'],
+                        'LTP': p['last_price'],
+                        'P&L': p['pnl'],
+                        '%Change': round(((p['last_price'] - p['average_price']) / p['average_price'] * 100), 2),
+                        'Product': p['product']
+                    })
+            st.session_state.zerodha_positions = pd.DataFrame(pos_data)
+        
+        # Get holdings
+        holdings = st.session_state.kite.holdings()
+        if holdings:
+            hold_data = []
+            for h in holdings:
+                hold_data.append({
+                    'Symbol': h['tradingsymbol'],
+                    'Qty': h['quantity'],
+                    'Avg Price': h['average_price'],
+                    'LTP': h['last_price'],
+                    'P&L': h['pnl'],
+                    'Day Change%': round(h['day_change_percentage'], 2),
+                    'Value': h['last_price'] * h['quantity']
+                })
+            st.session_state.zerodha_holdings = pd.DataFrame(hold_data)
+        
+        # Get funds
+        funds = st.session_state.kite.margins()
+        if funds and 'equity' in funds:
+            st.session_state.zerodha_funds = {
+                'available': funds['equity']['available']['live_balance'],
+                'used': funds['equity']['utilised']['debits'],
+                'total': funds['equity']['net']
+            }
+        
+        st.session_state.last_sync = time.time()
         return True
-    except:
+    except Exception as e:
         return False
 
-# --- KITE INITIALIZATION ---
-if 'kite' not in st.session_state:
-    st.session_state.kite = KiteConnect(api_key=API_KEY)
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'instrument_map' not in st.session_state:
-    st.session_state.instrument_map = {}
-if 'token_to_symbol' not in st.session_state:
-    st.session_state.token_to_symbol = {}
-if 'live_data' not in st.session_state:
-    st.session_state.live_data = {}
-if 'websocket_active' not in st.session_state:
-    st.session_state.websocket_active = False
-
-# --- STATE INITIALIZATION ---
-if 'initialized' not in st.session_state:
-    loaded = load_state()
-    if not loaded:
-        st.session_state.portfolio = pd.DataFrame(columns=[
-            "ID", "Symbol", "Qty", "Entry", "LTP", "P&L", "%Change", "Target", "Stop", "TrailStop", "Strategy"
-        ])
-        st.session_state.history = pd.DataFrame(columns=[
-            "Time", "Symbol", "Entry", "Exit", "P&L", "%Return", "Strategy", "Duration"
-        ])
-        st.session_state.balance = 50000.0
-        st.session_state.strategy_stats = {s: {"signals": 0, "trades": 0, "wins": 0, "total_pnl": 0.0, "active": True} for s in 
-            ["RSI Mean Reversion", "EMA Crossover (9/21)", "Bollinger Mean Reversion", "VWAP Scalping", 
-             "MACD Momentum", "Supertrend Breakout", "Volume Breakout", "Multi-Timeframe Trend"]}
-    st.session_state.initialized = True
-
-if 'scan_results' not in st.session_state: st.session_state.scan_results = []
-if 'scanning' not in st.session_state: st.session_state.scanning = False
-if 'scan_progress' not in st.session_state: st.session_state.scan_progress = {"current": 0, "total": 0, "found": 0, "symbol": ""}
-if 'last_position_update' not in st.session_state: st.session_state.last_position_update = time.time()
-if 'market_snapshot' not in st.session_state: st.session_state.market_snapshot = pd.DataFrame()
+# --- MARKET STATUS ---
+def get_market_status():
+    """Get live market status from Zerodha"""
+    try:
+        # Check if it's a trading day and within market hours
+        now = datetime.now()
+        
+        # Simple check: Monday-Friday, 9:15 AM - 3:30 PM IST
+        if now.weekday() >= 5:  # Saturday or Sunday
+            return "CLOSED"
+        
+        market_open = now.replace(hour=9, minute=15, second=0)
+        market_close = now.replace(hour=15, minute=30, second=0)
+        
+        if market_open <= now <= market_close:
+            return "OPEN"
+        elif now < market_open:
+            return "PRE-MARKET"
+        else:
+            return "CLOSED"
+    except:
+        return "UNKNOWN"
 
 # --- WEBSOCKET HANDLER ---
 class WebSocketHandler:
@@ -106,11 +208,9 @@ class WebSocketHandler:
         self.kws.on_ticks = self.on_ticks
         self.kws.on_connect = self.on_connect
         self.kws.on_close = self.on_close
-        self.kws.on_error = self.on_error
         self.running = False
         
     def on_ticks(self, ws, ticks):
-        """Handle incoming tick data"""
         for tick in ticks:
             token = tick['instrument_token']
             if token in st.session_state.token_to_symbol:
@@ -118,23 +218,26 @@ class WebSocketHandler:
                 st.session_state.live_data[symbol] = {
                     'ltp': tick.get('last_price', 0),
                     'change': tick.get('change', 0),
-                    'volume': tick.get('volume', 0),
+                    'volume': tick.get('volume_traded', 0),
                     'oi': tick.get('oi', 0),
-                    'timestamp': datetime.now()
+                    'high': tick.get('ohlc', {}).get('high', 0),
+                    'low': tick.get('ohlc', {}).get('low', 0),
+                    'open': tick.get('ohlc', {}).get('open', 0),
+                    'close': tick.get('ohlc', {}).get('close', 0)
                 }
     
     def on_connect(self, ws, response):
-        """Subscribe to instruments on connection"""
         tokens = list(st.session_state.instrument_map.values())
         if tokens:
-            ws.subscribe(tokens)
-            ws.set_mode(ws.MODE_FULL, tokens)
+            # Subscribe in batches to avoid overload
+            batch_size = 500
+            for i in range(0, len(tokens), batch_size):
+                batch = tokens[i:i+batch_size]
+                ws.subscribe(batch)
+                ws.set_mode(ws.MODE_FULL, batch)
     
     def on_close(self, ws, code, reason):
         st.session_state.websocket_active = False
-    
-    def on_error(self, ws, code, reason):
-        pass
     
     def start(self):
         if not self.running:
@@ -146,642 +249,519 @@ class WebSocketHandler:
             self.kws.close()
             self.running = False
 
-# --- KITE HELPER FUNCTIONS ---
-def get_historical_data(symbol, interval="15minute", days=5):
+# --- PATTERN DETECTION ---
+def detect_patterns(data, symbol, price):
+    """Detect chart patterns and breakout levels"""
     try:
-        token = st.session_state.instrument_map.get(symbol)
-        if not token: return pd.DataFrame()
-        to_date = datetime.now()
-        from_date = to_date - timedelta(days=days)
-        records = st.session_state.kite.historical_data(token, from_date, to_date, interval)
-        df = pd.DataFrame(records)
-        if df.empty: return pd.DataFrame()
-        df.columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'oi']
-        return df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
-    except: return pd.DataFrame()
-
-def get_live_price(symbol):
-    """Get live price from WebSocket data or fallback to API"""
-    if symbol in st.session_state.live_data:
-        return st.session_state.live_data[symbol]['ltp']
-    try:
-        resp = st.session_state.kite.ltp([f"NSE:{symbol}"])
-        return float(resp[f"NSE:{symbol}"]["last_price"])
-    except: return None
-
-def place_order(symbol, qty, transaction_type="BUY"):
-    try:
-        order_id = st.session_state.kite.place_order(
-            variety=st.session_state.kite.VARIETY_REGULAR,
-            exchange=st.session_state.kite.EXCHANGE_NSE,
-            tradingsymbol=symbol,
-            transaction_type=transaction_type,
-            quantity=qty,
-            product=st.session_state.kite.PRODUCT_MIS,
-            order_type=st.session_state.kite.ORDER_TYPE_MARKET
-        )
-        return order_id
-    except: return None
-
-# --- TECHNICAL INDICATORS ---
-def calculate_indicators(data):
-    try:
-        if len(data) < 30: return None
-        c, h, l, v = data['Close'], data['High'], data['Low'], data['Volume']
+        if len(data) < 50:
+            return []
         
-        # RSI
-        rsi = ta.momentum.RSIIndicator(c, window=14).rsi()
+        patterns = []
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
         
-        # EMA
-        ema9 = ta.trend.EMAIndicator(c, window=9).ema_indicator()
-        ema21 = ta.trend.EMAIndicator(c, window=21).ema_indicator()
-        ema50 = ta.trend.EMAIndicator(c, window=50).ema_indicator()
+        # 1. Breakout Detection
+        resistance = high.rolling(20).max().iloc[-1]
+        support = low.rolling(20).min().iloc[-1]
         
-        # Bollinger Bands
-        bb = ta.volatility.BollingerBands(c, window=20, window_dev=2)
+        if price >= resistance * 0.99:  # Within 1% of resistance
+            patterns.append({
+                'Pattern': 'BREAKOUT',
+                'Level': round(resistance, 2),
+                'Distance%': round(((price - resistance) / resistance * 100), 2),
+                'Signal': 'BULLISH'
+            })
         
-        # VWAP
-        vwap = (v * (h + l + c) / 3).cumsum() / v.cumsum()
+        if price <= support * 1.01:  # Within 1% of support
+            patterns.append({
+                'Pattern': 'SUPPORT BOUNCE',
+                'Level': round(support, 2),
+                'Distance%': round(((support - price) / support * 100), 2),
+                'Signal': 'BULLISH'
+            })
         
-        # MACD
-        macd = ta.trend.MACD(c)
+        # 2. Triangle Pattern (converging range)
+        recent_highs = high.tail(20)
+        recent_lows = low.tail(20)
         
-        # ATR for volatility
-        atr = ta.volatility.AverageTrueRange(h, l, c, window=14).average_true_range()
+        high_trend = recent_highs.iloc[-1] < recent_highs.iloc[0]
+        low_trend = recent_lows.iloc[-1] > recent_lows.iloc[0]
         
-        # Volume
-        vol_ratio = float(v.iloc[-1] / v.rolling(20).mean().iloc[-1]) if v.rolling(20).mean().iloc[-1] > 0 else 1.0
+        if high_trend and low_trend:
+            patterns.append({
+                'Pattern': 'TRIANGLE',
+                'Level': round((recent_highs.iloc[-1] + recent_lows.iloc[-1]) / 2, 2),
+                'Distance%': 0,
+                'Signal': 'CONSOLIDATION'
+            })
         
-        return {
-            'rsi': float(rsi.iloc[-1]) if not rsi.empty else None,
-            'ema_9': float(ema9.iloc[-1]) if not ema9.empty else None,
-            'ema_21': float(ema21.iloc[-1]) if not ema21.empty else None,
-            'ema_50': float(ema50.iloc[-1]) if not ema50.empty else None,
-            'bb_upper': float(bb.bollinger_hband().iloc[-1]) if not bb.bollinger_hband().empty else None,
-            'bb_lower': float(bb.bollinger_lband().iloc[-1]) if not bb.bollinger_lband().empty else None,
-            'bb_mid': float(bb.bollinger_mavg().iloc[-1]) if not bb.bollinger_mavg().empty else None,
-            'vwap': float(vwap.iloc[-1]) if not vwap.empty else None,
-            'macd_diff': float(macd.macd_diff().iloc[-1]) if not macd.macd_diff().empty else None,
-            'atr': float(atr.iloc[-1]) if not atr.empty else None,
-            'volume_ratio': vol_ratio,
-            'close': float(c.iloc[-1]),
-            'prev_close': float(c.iloc[-2]) if len(c) > 1 else float(c.iloc[-1])
-        }
-    except: return None
-
-# --- STRATEGY SIGNALS ---
-def check_all_strategies(ind, price):
-    """Check all strategies and return best signal"""
-    if not ind:
-        return None, None, None, None
-    
-    signals = []
-    
-    # RSI Mean Reversion
-    if ind['rsi'] and ind['rsi'] < 35:
-        target = price * 1.025
-        stop = price * 0.975
-        signals.append(("RSI Mean Reversion", "BUY", target, stop, ind['rsi']))
-    
-    # EMA Crossover
-    if ind['ema_9'] and ind['ema_21'] and ind['ema_9'] > ind['ema_21']:
-        target = price * 1.03
-        stop = price * 0.98
-        signals.append(("EMA Crossover (9/21)", "BUY", target, stop, 0))
-    
-    # Bollinger Mean Reversion
-    if ind['bb_lower'] and ind['bb_mid'] and price < ind['bb_mid'] * 0.98:
-        target = ind['bb_mid']
-        stop = price * 0.97
-        signals.append(("Bollinger Mean Reversion", "BUY", target, stop, 0))
-    
-    # VWAP Scalping
-    if ind['vwap'] and price < ind['vwap']:
-        target = ind['vwap'] * 1.01
-        stop = price * 0.99
-        signals.append(("VWAP Scalping", "BUY", target, stop, 0))
-    
-    # MACD Momentum
-    if ind['macd_diff'] and ind['macd_diff'] > -0.3:
-        target = price * 1.035
-        stop = price * 0.975
-        signals.append(("MACD Momentum", "BUY", target, stop, 0))
-    
-    # Volume Breakout
-    if ind['volume_ratio'] > 1.5 and ind['rsi'] and ind['rsi'] > 45:
-        target = price * 1.04
-        stop = price * 0.97
-        signals.append(("Volume Breakout", "BUY", target, stop, 0))
-    
-    # Supertrend
-    if ind['close'] > ind['prev_close'] * 1.01:
-        target = price * 1.04
-        stop = price * 0.97
-        signals.append(("Supertrend Breakout", "BUY", target, stop, 0))
-    
-    # Multi-Timeframe Trend
-    if ind['ema_9'] and ind['ema_21'] and ind['ema_50']:
-        if ind['ema_9'] > ind['ema_21'] > ind['ema_50']:
-            target = price * 1.05
-            stop = price * 0.965
-            signals.append(("Multi-Timeframe Trend", "BUY", target, stop, 0))
-    
-    # Return best signal (prioritize by strength)
-    if signals:
-        # Sort by risk-reward ratio
-        best = max(signals, key=lambda x: (x[2] - price) / (price - x[3]))
-        return best[0], best[1], best[2], best[3]
-    
-    return None, None, None, None
-
-# --- TRADE EXECUTION ---
-def execute_trade(symbol, price, qty, target, stop, strategy, live_trading=False):
-    trade_value = price * qty
-    if trade_value > st.session_state.balance: return False, "Insufficient balance"
-    if len(st.session_state.portfolio) >= max_trades: return False, "Max positions reached"
-    
-    if live_trading:
-        order_id = place_order(symbol, qty, "BUY")
-        if not order_id: return False, "Order failed"
-    
-    trade_id = secrets.token_hex(4)
-    new_position = pd.DataFrame([{
-        "ID": trade_id, "Symbol": symbol, "Qty": qty, "Entry": round(price, 2), "LTP": round(price, 2),
-        "P&L": 0.0, "%Change": 0.0, "Target": round(target, 2), "Stop": round(stop, 2), 
-        "TrailStop": round(stop, 2), "Strategy": strategy
-    }])
-    
-    st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_position], ignore_index=True)
-    st.session_state.balance -= trade_value
-    st.session_state.strategy_stats[strategy]['trades'] += 1
-    save_state()
-    
-    send_telegram_msg(f"📈 BUY {symbol} @ ₹{round(price, 2)}\n{strategy}\nQty: {qty}\nTarget: ₹{round(target, 2)}")
-    return True, f"Executed: {symbol}"
-
-# --- REAL-TIME MARKET SCANNER ---
-def scan_market_realtime(symbols, active_strategies, min_price, max_price, min_rsi, max_rsi):
-    """Scan all symbols with real-time WebSocket data"""
-    results = []
-    total = len(symbols)
-    
-    for idx, symbol in enumerate(symbols):
-        try:
-            st.session_state.scan_progress = {
-                "current": idx + 1, 
-                "total": total, 
-                "found": len(results), 
-                "symbol": symbol
-            }
-            
-            # Get live price from WebSocket
-            if symbol in st.session_state.live_data:
-                live_data = st.session_state.live_data[symbol]
-                price = live_data['ltp']
-                change_pct = live_data['change']
-            else:
-                price = get_live_price(symbol)
-                if not price:
-                    continue
-                change_pct = 0
-            
-            # Apply filters
-            if price < min_price or price > max_price:
-                continue
-            
-            # Get historical data for indicators
-            hist_data = get_historical_data(symbol, interval="15minute", days=3)
-            
-            if hist_data.empty or len(hist_data) < 30:
-                continue
-            
-            # Calculate indicators
-            indicators = calculate_indicators(hist_data)
-            
-            if not indicators:
-                continue
-            
-            # RSI filter
-            if indicators['rsi'] and (indicators['rsi'] < min_rsi or indicators['rsi'] > max_rsi):
-                continue
-            
-            # Check all strategies
-            strategy, action, target, stop = check_all_strategies(indicators, price)
-            
-            if strategy and strategy in active_strategies:
-                st.session_state.strategy_stats[strategy]['signals'] += 1
-                
-                # Calculate % targets
-                target_pct = ((target - price) / price) * 100 if target else 0
-                stop_pct = ((price - stop) / price) * 100 if stop else 0
-                risk_reward = target_pct / stop_pct if stop_pct > 0 else 0
-                
-                results.append({
-                    "Symbol": symbol,
-                    "LTP": round(price, 2),
-                    "Change%": round(change_pct, 2),
-                    "Strategy": strategy,
-                    "Action": action,
-                    "Target": round(target, 2),
-                    "Target%": round(target_pct, 2),
-                    "Stop": round(stop, 2),
-                    "Stop%": round(stop_pct, 2),
-                    "R:R": round(risk_reward, 2),
-                    "RSI": round(indicators['rsi'], 2) if indicators['rsi'] else 0,
-                    "Volume": round(indicators['volume_ratio'], 2)
+        # 3. Double Bottom/Top
+        lows_20 = low.tail(20)
+        highs_20 = high.tail(20)
+        
+        min_idx = lows_20.idxmin()
+        if len(lows_20) > 10:
+            second_half = lows_20[min_idx+5:]
+            if not second_half.empty and abs(lows_20.min() - second_half.min()) / lows_20.min() < 0.02:
+                patterns.append({
+                    'Pattern': 'DOUBLE BOTTOM',
+                    'Level': round(lows_20.min(), 2),
+                    'Distance%': round(((price - lows_20.min()) / lows_20.min() * 100), 2),
+                    'Signal': 'BULLISH'
                 })
         
-        except Exception as e:
-            continue
-    
-    return results
+        return patterns
+    except:
+        return []
+
+# --- LOAD FULL STOCK UNIVERSE ---
+def load_stock_universe():
+    """Load complete NSE stock list"""
+    try:
+        instruments = st.session_state.kite.instruments("NSE")
+        
+        # Filter for equity stocks only
+        stocks = [i for i in instruments if i['segment'] == 'NSE' and i['instrument_type'] == 'EQ']
+        
+        stock_data = []
+        for stock in stocks:
+            stock_data.append({
+                'Symbol': stock['tradingsymbol'],
+                'Token': stock['instrument_token'],
+                'Name': stock['name'],
+                'Exchange': stock['exchange'],
+                'Lot Size': stock.get('lot_size', 1)
+            })
+        
+        df = pd.DataFrame(stock_data)
+        
+        # Store mappings
+        st.session_state.instrument_map = {s['tradingsymbol']: s['instrument_token'] for s in stocks}
+        st.session_state.token_to_symbol = {s['instrument_token']: s['tradingsymbol'] for s in stocks}
+        
+        return df
+    except:
+        return pd.DataFrame()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🔱 PRIMA v12.0")
-    st.caption("Real-Time WebSocket Terminal")
+    st.markdown("# 🔱 PRIMA v13")
+    st.markdown("### Professional Terminal")
     
-    # --- KITE AUTHENTICATION ---
+    # --- AUTHENTICATION ---
     if not st.session_state.authenticated:
-        st.warning("⚠️ Not Connected")
+        st.error("🔴 **NOT CONNECTED**")
+        st.markdown("---")
+        
         login_url = st.session_state.kite.login_url()
-        st.link_button("🔑 Login to Zerodha", login_url)
+        st.link_button("🔑 Login to Zerodha", login_url, use_container_width=True)
+        
         request_token = st.text_input("Request Token:", type="password")
         
-        if st.button("🚀 Activate"):
+        if st.button("🚀 CONNECT", type="primary", use_container_width=True):
             try:
-                data = st.session_state.kite.generate_session(request_token, api_secret=API_SECRET)
-                st.session_state.access_token = data["access_token"]
-                st.session_state.kite.set_access_token(data["access_token"])
-                
-                # Load instruments
-                instruments = st.session_state.kite.instruments("NSE")
-                st.session_state.instrument_map = {i['tradingsymbol']: i['instrument_token'] for i in instruments}
-                st.session_state.token_to_symbol = {i['instrument_token']: i['tradingsymbol'] for i in instruments}
-                
-                st.session_state.authenticated = True
-                save_state()
-                st.success("✅ Connected!")
-                time.sleep(1)
-                st.rerun()
+                with st.spinner("Authenticating..."):
+                    data = st.session_state.kite.generate_session(request_token, api_secret=API_SECRET)
+                    st.session_state.access_token = data["access_token"]
+                    st.session_state.kite.set_access_token(data["access_token"])
+                    
+                    # Load stock universe
+                    st.session_state.stock_universe = load_stock_universe()
+                    
+                    # Sync account
+                    sync_zerodha_account()
+                    
+                    st.session_state.authenticated = True
+                    st.success("✅ Connected!")
+                    time.sleep(1)
+                    st.rerun()
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"❌ Error: {str(e)}")
     else:
-        st.success("✅ Connected to Zerodha")
+        st.success("🟢 **CONNECTED**")
         
-        # WebSocket status
+        # Account info
+        if st.session_state.zerodha_funds:
+            st.markdown("---")
+            st.markdown("### 💰 Account")
+            st.metric("Available Cash", f"₹{round(st.session_state.zerodha_funds.get('available', 0), 2):,}")
+            st.metric("Used Margin", f"₹{round(st.session_state.zerodha_funds.get('used', 0), 2):,}")
+        
+        st.markdown("---")
+        
+        # WebSocket control
+        st.markdown("### 📡 Data Feed")
+        
         if st.session_state.websocket_active:
-            st.success("🟢 WebSocket: LIVE")
+            st.success("🟢 WebSocket LIVE")
+            if st.button("🔌 Disconnect", use_container_width=True):
+                if hasattr(st.session_state, 'ws_handler'):
+                    st.session_state.ws_handler.stop()
+                st.session_state.websocket_active = False
+                st.rerun()
         else:
-            st.warning("🟡 WebSocket: Disconnected")
-            if st.button("🔌 Connect WebSocket"):
+            st.warning("🟡 WebSocket OFF")
+            if st.button("🔌 Connect WebSocket", type="primary", use_container_width=True):
                 try:
                     ws_handler = WebSocketHandler(st.session_state.access_token, API_KEY)
                     st.session_state.ws_handler = ws_handler
                     ws_handler.start()
                     st.session_state.websocket_active = True
-                    st.success("WebSocket connected!")
+                    st.success("✅ WebSocket connected!")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"WebSocket error: {e}")
-    
-    st.divider()
-    
-    # --- BOT CONTROL ---
-    st.subheader("🤖 Bot Control")
-    
-    if 'bot_active' not in st.session_state:
-        st.session_state.bot_active = False
-    
-    bot_toggle = st.toggle("🤖 TRADING BOT", value=st.session_state.bot_active)
-    
-    if bot_toggle != st.session_state.bot_active:
-        st.session_state.bot_active = bot_toggle
-        save_state()
-        if bot_toggle:
-            send_telegram_msg("🟢 Trading bot ACTIVATED")
+                    st.error(f"Error: {e}")
+        
+        st.markdown("---")
+        
+        # Bot control
+        st.markdown("### 🤖 Trading Bot")
+        
+        bot_status = st.toggle("Enable Bot", value=st.session_state.bot_active, key="bot_toggle")
+        
+        if bot_status != st.session_state.bot_active:
+            st.session_state.bot_active = bot_status
+            if bot_status:
+                send_telegram_msg("🟢 Bot ACTIVATED")
+            else:
+                send_telegram_msg("🔴 Bot DEACTIVATED")
+        
+        if st.session_state.bot_active:
             st.success("🟢 Bot ACTIVE")
+            
+            st.markdown("#### Settings")
+            auto_trade = st.checkbox("Auto-Execute", value=False)
+            max_trades = st.number_input("Max Positions", 1, 20, 5)
+            trailing_stop = st.slider("Trailing Stop %", 0.5, 5.0, 1.5, 0.5)
         else:
-            send_telegram_msg("🔴 Trading bot DEACTIVATED")
-            st.warning("🔴 Bot INACTIVE")
-        time.sleep(1)
-        st.rerun()
-    
-    if st.session_state.bot_active:
-        st.success("🟢 **BOT: ACTIVE**")
-    else:
-        st.error("🔴 **BOT: INACTIVE**")
-    
-    st.divider()
-    
-    # --- TRADING SETTINGS ---
-    st.subheader("💰 Capital")
-    total_cap = st.number_input("Capital (₹)", value=50000.0)
-    max_trades = st.slider("Max Positions", 1, 20, 5)
-    
-    st.divider()
-    st.subheader("⚙️ Trading Mode")
-    live_trading = st.checkbox("🔴 LIVE TRADING", value=False, disabled=not st.session_state.bot_active)
-    auto_trade = st.checkbox("Auto-Execute", value=False, disabled=not st.session_state.bot_active)
-    trailing_stop_pct = st.slider("Trailing Stop %", 0.5, 5.0, 1.5)
-    
-    st.divider()
-    st.subheader("🎯 Filters")
-    min_price = st.number_input("Min Price (₹)", value=20.0)
-    max_price = st.number_input("Max Price (₹)", value=5000.0)
-    min_rsi = st.slider("Min RSI", 0, 100, 15)
-    max_rsi = st.slider("Max RSI", 0, 100, 85)
-    
-    st.divider()
-    st.subheader("📊 Strategies")
-    for strategy in list(st.session_state.strategy_stats.keys()):
-        st.session_state.strategy_stats[strategy]['active'] = st.checkbox(
-            strategy[:20], value=st.session_state.strategy_stats[strategy]['active'], key=f"s_{strategy[:10]}")
-    
-    st.divider()
-    
-    if st.button("🚨 EXIT ALL", type="primary"):
-        total_exit = sum(row['LTP'] * row['Qty'] for _, row in st.session_state.portfolio.iterrows())
-        if live_trading:
-            for _, row in st.session_state.portfolio.iterrows():
-                place_order(row['Symbol'], row['Qty'], "SELL")
-        st.session_state.balance += total_exit
-        st.session_state.portfolio = pd.DataFrame(columns=[
-            "ID", "Symbol", "Qty", "Entry", "LTP", "P&L", "%Change", "Target", "Stop", "TrailStop", "Strategy"
-        ])
-        save_state()
-        st.success(f"Closed: +₹{round(total_exit, 2)}")
-        time.sleep(1)
-        st.rerun()
+            st.error("🔴 Bot INACTIVE")
+        
+        st.markdown("---")
+        
+        # Sync button
+        if st.button("🔄 Sync Account", use_container_width=True):
+            with st.spinner("Syncing..."):
+                sync_zerodha_account()
+            st.success("✅ Synced!")
+            time.sleep(0.5)
+            st.rerun()
+        
+        # Last sync time
+        if st.session_state.last_sync > 0:
+            time_ago = int(time.time() - st.session_state.last_sync)
+            st.caption(f"Last sync: {time_ago}s ago")
 
 # --- MAIN UI ---
 if st.session_state.authenticated:
-    current_pos_val = float((st.session_state.portfolio['LTP'] * st.session_state.portfolio['Qty']).sum()) if not st.session_state.portfolio.empty else 0.0
-    live_pnl = float(st.session_state.portfolio['P&L'].sum()) if not st.session_state.portfolio.empty else 0.0
     
-    st.title("🔱 PRIMA Real-Time Terminal v12.0")
+    # Update market status
+    st.session_state.market_status = get_market_status()
     
-    # Bot status banner
-    if st.session_state.get('bot_active', False):
-        st.success("🟢 **TRADING BOT: ACTIVE** | WebSocket streaming live data")
-    else:
-        st.info("🔴 **TRADING BOT: INACTIVE** | Manual mode")
+    # Header
+    col1, col2 = st.columns([3, 1])
     
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Cash", f"₹{round(st.session_state.balance, 2)}")
-    c2.metric("Portfolio", f"₹{round(current_pos_val, 2)}")
-    c3.metric("P&L", f"₹{round(live_pnl, 2)}")
-    c4.metric("Total", f"₹{round(st.session_state.balance + current_pos_val, 2)}")
-    c5.metric("Positions", f"{len(st.session_state.portfolio)}/{max_trades}")
+    with col1:
+        st.markdown("# 🔱 PRIMA PROFESSIONAL TERMINAL")
     
-    st.divider()
+    with col2:
+        # Market status indicator
+        if st.session_state.market_status == "OPEN":
+            st.markdown('<p class="status-live">🟢 MARKET OPEN</p>', unsafe_allow_html=True)
+        elif st.session_state.market_status == "CLOSED":
+            st.markdown("🔴 **MARKET CLOSED**")
+        elif st.session_state.market_status == "PRE-MARKET":
+            st.markdown("🟡 **PRE-MARKET**")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📡 Live Scanner", "⚔️ Positions", "📊 Analytics", "📜 History"])
+    st.markdown("---")
     
-    # --- TAB 1: LIVE SCANNER ---
+    # Account metrics
+    if st.session_state.zerodha_funds:
+        c1, c2, c3, c4 = st.columns(4)
+        
+        available = st.session_state.zerodha_funds.get('available', 0)
+        used = st.session_state.zerodha_funds.get('used', 0)
+        total = st.session_state.zerodha_funds.get('total', 0)
+        
+        # Calculate portfolio value from holdings
+        portfolio_value = 0
+        if not st.session_state.zerodha_holdings.empty:
+            portfolio_value = st.session_state.zerodha_holdings['Value'].sum()
+        
+        c1.metric("💵 Available Cash", f"₹{round(available, 2):,}")
+        c2.metric("📊 Portfolio Value", f"₹{round(portfolio_value, 2):,}")
+        c3.metric("⚡ Used Margin", f"₹{round(used, 2):,}")
+        c4.metric("💎 Total Equity", f"₹{round(total, 2):,}")
+    
+    st.markdown("---")
+    
+    # Tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Live Market", "⚔️ Your Positions", "💼 Holdings", "🎯 Patterns & Signals"])
+    
+    # --- TAB 1: LIVE MARKET ---
     with tab1:
-        col_scan1, col_scan2, col_scan3 = st.columns([2, 1, 1])
+        st.markdown("### 📊 Live Stock Universe")
         
-        with col_scan1:
-            if st.button("🔍 SCAN MARKET (Real-Time)", type="primary", disabled=not st.session_state.bot_active):
-                st.session_state.scanning = True
+        if st.session_state.market_status != "OPEN":
+            st.warning(f"⚠️ Market is {st.session_state.market_status}. Live data streaming paused.")
         
-        with col_scan2:
-            refresh_rate = st.selectbox("Refresh", ["1s", "2s", "5s"], index=1)
+        # Controls
+        col1, col2, col3 = st.columns([2, 1, 1])
         
-        with col_scan3:
-            auto_scan = st.checkbox("🔄 Auto-Scan", disabled=not st.session_state.bot_active)
+        with col1:
+            search = st.text_input("🔍 Search Symbol", placeholder="e.g. RELIANCE, TCS, INFY")
         
-        if not st.session_state.bot_active:
-            st.warning("⚠️ **Enable Trading Bot** to start scanning")
+        with col2:
+            sort_by = st.selectbox("Sort By", ["Change%", "LTP", "Volume", "Symbol"])
         
-        st.divider()
+        with col3:
+            filter_type = st.selectbox("Filter", ["All", "Gainers", "Losers", "High Volume"])
         
-        # LIVE PROGRESS
-        if st.session_state.scanning or st.session_state.scan_progress['total'] > 0:
-            prog = st.session_state.scan_progress
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Scanned", f"{prog['current']}/{prog['total']}")
-            col2.metric("Signals", prog['found'])
-            col3.metric("Current", prog.get('symbol', '-'))
-            if prog['total'] > 0:
-                st.progress(prog['current'] / prog['total'])
-        
-        # RUN SCAN
-        if st.session_state.scanning:
-            # Top 100 liquid stocks
-            nifty_100 = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 'ITC', 
-                        'KOTAKBANK', 'LT', 'HINDUNILVR', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI', 
-                        'TITAN', 'SUNPHARMA', 'ULTRACEMCO', 'NESTLEIND', 'WIPRO', 'HCLTECH', 'TATAMOTORS',
-                        'ONGC', 'NTPC', 'POWERGRID', 'M&M', 'ADANIPORTS', 'BAJAJFINSV', 'DRREDDY', 'TECHM',
-                        'COALINDIA', 'CIPLA', 'DIVISLAB', 'GRASIM', 'EICHERMOT', 'BRITANNIA', 'SHREECEM',
-                        'INDUSINDBK', 'BPCL', 'JSWSTEEL', 'TATACONSUM', 'TATASTEEL', 'APOLLOHOSP', 'HINDALCO',
-                        'ADANIENT', 'HEROMOTOCO', 'UPL', 'BAJAJ-AUTO', 'LTIM', 'SBILIFE', 'DABUR', 'PIDILITIND',
-                        'AMBUJACEM', 'DLF', 'GODREJCP', 'HAVELLS', 'VEDL', 'BERGEPAINT', 'BOSCHLTD', 'MUTHOOTFIN',
-                        'GAIL', 'SIEMENS', 'ABB', 'LUPIN', 'BANKBARODA', 'PNB', 'INDIGO', 'ADANIGREEN', 
-                        'BANDHANBNK', 'TATAPOWER', 'INDUSTOWER', 'CANBK', 'JUBLFOOD', 'MCDOWELL-N', 'BEL',
-                        'CHOLAFIN', 'TORNTPHARM', 'TRENT', 'LICI', 'ZOMATO', 'NYKAA', 'PAYTM', 'IRCTC',
-                        'IRFC', 'ZYDUSLIFE', 'CONCOR', 'HAL', 'SAIL', 'RECLTD', 'GNFC', 'NMDC']
+        # Build live table
+        if not st.session_state.stock_universe.empty:
             
-            active_strategies = [s for s, stats in st.session_state.strategy_stats.items() if stats['active']]
+            # Get subset for performance (top 200 liquid stocks)
+            display_stocks = st.session_state.stock_universe.head(200).copy()
             
-            if not active_strategies:
-                st.warning("⚠️ Enable strategies in sidebar!")
-                st.session_state.scanning = False
-            else:
-                results = scan_market_realtime(nifty_100, active_strategies, min_price, max_price, min_rsi, max_rsi)
-                st.session_state.scan_results = results
-                st.session_state.scanning = False
+            if search:
+                display_stocks = display_stocks[display_stocks['Symbol'].str.contains(search.upper(), na=False)]
+            
+            # Add live data
+            live_table = []
+            for _, stock in display_stocks.iterrows():
+                symbol = stock['Symbol']
                 
-                if results:
-                    send_telegram_msg(f"📊 Live Scan: {len(results)} signals found")
-                    st.success(f"✅ {len(results)} live signals!")
+                # Get live price
+                if symbol in st.session_state.live_data:
+                    data = st.session_state.live_data[symbol]
+                    ltp = data['ltp']
+                    change = data['change']
+                    volume = data['volume']
+                    high = data['high']
+                    low = data['low']
                 else:
-                    st.info("No signals - market conditions not met")
-        
-        # DISPLAY RESULTS TABLE
-        if st.session_state.scan_results:
-            st.subheader(f"🎯 {len(st.session_state.scan_results)} Live Signals")
-            
-            df_results = pd.DataFrame(st.session_state.scan_results)
-            
-            # Color coding for better visualization
-            st.dataframe(
-                df_results,
-                column_config={
-                    "LTP": st.column_config.NumberColumn("LTP", format="₹%.2f"),
-                    "Change%": st.column_config.NumberColumn("Change%", format="%.2f%%"),
-                    "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
-                    "Target%": st.column_config.NumberColumn("Target%", format="%.2f%%"),
-                    "Stop": st.column_config.NumberColumn("Stop Loss", format="₹%.2f"),
-                    "Stop%": st.column_config.NumberColumn("Risk%", format="%.2f%%"),
-                    "R:R": st.column_config.NumberColumn("Risk:Reward", format="%.2f"),
-                    "RSI": st.column_config.NumberColumn("RSI", format="%.1f"),
-                    "Volume": st.column_config.NumberColumn("Vol Ratio", format="%.2fx"),
-                },
-                hide_index=True,
-                height=400
-            )
-            
-            st.divider()
-            
-            # Auto-execute
-            if auto_trade and st.session_state.bot_active:
-                st.info("🤖 Auto-executing top signals...")
-                risk_per_trade = total_cap / max_trades
-                
-                for signal in st.session_state.scan_results[:max_trades - len(st.session_state.portfolio)]:
-                    qty = int(risk_per_trade / signal['LTP'])
-                    if qty > 0:
-                        success, msg = execute_trade(
-                            signal['Symbol'], signal['LTP'], qty, 
-                            signal['Target'], signal['Stop'], 
-                            signal['Strategy'], live_trading
-                        )
-                        if success:
-                            st.toast(f"✅ {msg}", icon="📈")
-                
-                st.session_state.scan_results = []
-                save_state()
-                time.sleep(1)
-                st.rerun()
-    
-    # --- TAB 2: POSITIONS ---
-    with tab2:
-        if not st.session_state.portfolio.empty:
-            # High-frequency updates
-            if time.time() - st.session_state.last_position_update > 1:
-                for idx, row in st.session_state.portfolio.iterrows():
+                    # Fallback to API call if not in WebSocket data
                     try:
-                        ltp = get_live_price(row['Symbol'])
-                        
-                        if ltp:
-                            st.session_state.portfolio.at[idx, 'LTP'] = round(ltp, 2)
-                            pnl = (ltp - row['Entry']) * row['Qty']
-                            change_pct = ((ltp - row['Entry']) / row['Entry']) * 100
-                            
-                            st.session_state.portfolio.at[idx, 'P&L'] = round(pnl, 2)
-                            st.session_state.portfolio.at[idx, '%Change'] = round(change_pct, 2)
-                            
-                            # Trailing stop
-                            if pnl > 0:
-                                trail_stop = ltp * (1 - trailing_stop_pct / 100)
-                                if trail_stop > row['TrailStop']:
-                                    st.session_state.portfolio.at[idx, 'TrailStop'] = round(trail_stop, 2)
-                            
-                            # Check exits
-                            if ltp <= row['TrailStop'] or ltp >= row['Target']:
-                                if live_trading:
-                                    place_order(row['Symbol'], row['Qty'], "SELL")
-                                
-                                st.session_state.balance += ltp * row['Qty']
-                                
-                                if pnl > 0:
-                                    st.session_state.strategy_stats[row['Strategy']]['wins'] += 1
-                                st.session_state.strategy_stats[row['Strategy']]['total_pnl'] += pnl
-                                
-                                # Add to history
-                                return_pct = (pnl / (row['Entry'] * row['Qty'])) * 100
-                                new_history = pd.DataFrame([{
-                                    "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    "Symbol": row['Symbol'],
-                                    "Entry": row['Entry'],
-                                    "Exit": ltp,
-                                    "P&L": pnl,
-                                    "%Return": round(return_pct, 2),
-                                    "Strategy": row['Strategy'],
-                                    "Duration": "~1h"
-                                }])
-                                st.session_state.history = pd.concat([st.session_state.history, new_history], ignore_index=True)
-                                
-                                exit_type = "TARGET" if ltp >= row['Target'] else "TRAIL STOP"
-                                send_telegram_msg(f"{'🎯' if exit_type == 'TARGET' else '🛑'} {exit_type}: {row['Symbol']} | ₹{round(pnl, 2)} ({round(return_pct, 2)}%)")
-                                
-                                st.session_state.portfolio = st.session_state.portfolio.drop(idx)
-                                save_state()
+                        quote = st.session_state.kite.quote([f"NSE:{symbol}"])
+                        if f"NSE:{symbol}" in quote:
+                            q = quote[f"NSE:{symbol}"]
+                            ltp = q['last_price']
+                            change = q['net_change']
+                            volume = q['volume']
+                            high = q['ohlc']['high']
+                            low = q['ohlc']['low']
+                        else:
+                            continue
                     except:
                         continue
                 
-                st.session_state.last_position_update = time.time()
-                save_state()
+                # Calculate change %
+                if ltp > 0 and change != 0:
+                    prev_close = ltp - change
+                    change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+                else:
+                    change_pct = 0
+                
+                # Apply filters
+                if filter_type == "Gainers" and change_pct <= 0:
+                    continue
+                elif filter_type == "Losers" and change_pct >= 0:
+                    continue
+                elif filter_type == "High Volume" and volume < 100000:
+                    continue
+                
+                live_table.append({
+                    'Symbol': symbol,
+                    'LTP': round(ltp, 2),
+                    'Change': round(change, 2),
+                    'Change%': round(change_pct, 2),
+                    'High': round(high, 2),
+                    'Low': round(low, 2),
+                    'Volume': volume,
+                    'Status': '🟢' if change_pct > 0 else '🔴' if change_pct < 0 else '⚪'
+                })
             
-            # Display positions
+            if live_table:
+                df_live = pd.DataFrame(live_table)
+                
+                # Sort
+                if sort_by == "Change%":
+                    df_live = df_live.sort_values('Change%', ascending=False)
+                elif sort_by == "LTP":
+                    df_live = df_live.sort_values('LTP', ascending=False)
+                elif sort_by == "Volume":
+                    df_live = df_live.sort_values('Volume', ascending=False)
+                else:
+                    df_live = df_live.sort_values('Symbol')
+                
+                # Display with styling
+                st.dataframe(
+                    df_live,
+                    column_config={
+                        'Symbol': st.column_config.TextColumn('Symbol', width='small'),
+                        'LTP': st.column_config.NumberColumn('LTP', format='₹%.2f'),
+                        'Change': st.column_config.NumberColumn('Change', format='₹%.2f'),
+                        'Change%': st.column_config.NumberColumn('Change%', format='%.2f%%'),
+                        'High': st.column_config.NumberColumn('High', format='₹%.2f'),
+                        'Low': st.column_config.NumberColumn('Low', format='₹%.2f'),
+                        'Volume': st.column_config.NumberColumn('Volume', format='%d'),
+                        'Status': st.column_config.TextColumn('', width='small')
+                    },
+                    hide_index=True,
+                    height=600
+                )
+                
+                st.caption(f"Showing {len(df_live)} stocks | Last updated: {datetime.now().strftime('%H:%M:%S')}")
+            else:
+                st.info("No stocks match your filters")
+    
+    # --- TAB 2: YOUR POSITIONS ---
+    with tab2:
+        st.markdown("### ⚔️ Live Positions from Zerodha")
+        
+        if not st.session_state.zerodha_positions.empty:
             st.dataframe(
-                st.session_state.portfolio.drop(columns=['ID']),
+                st.session_state.zerodha_positions,
                 column_config={
-                    "Entry": st.column_config.NumberColumn("Entry", format="₹%.2f"),
-                    "LTP": st.column_config.NumberColumn("LTP", format="₹%.2f"),
-                    "P&L": st.column_config.NumberColumn("P&L", format="₹%.2f"),
-                    "%Change": st.column_config.NumberColumn("Change%", format="%.2f%%"),
-                    "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
-                    "TrailStop": st.column_config.NumberColumn("Trail", format="₹%.2f"),
+                    'Avg Price': st.column_config.NumberColumn('Avg Price', format='₹%.2f'),
+                    'LTP': st.column_config.NumberColumn('LTP', format='₹%.2f'),
+                    'P&L': st.column_config.NumberColumn('P&L', format='₹%.2f'),
+                    '%Change': st.column_config.NumberColumn('Change%', format='%.2f%%')
                 },
                 hide_index=True,
                 height=400
             )
+            
+            # Summary
+            total_pnl = st.session_state.zerodha_positions['P&L'].sum()
+            winning = len(st.session_state.zerodha_positions[st.session_state.zerodha_positions['P&L'] > 0])
+            total = len(st.session_state.zerodha_positions)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Positions", total)
+            c2.metric("Total P&L", f"₹{round(total_pnl, 2):,}")
+            c3.metric("Winning Positions", f"{winning}/{total}")
         else:
-            st.info("📭 No active positions")
+            st.info("📭 No open positions in your Zerodha account")
     
-    # --- TAB 3: ANALYTICS ---
+    # --- TAB 3: HOLDINGS ---
     with tab3:
-        strategy_data = []
-        for strat, stats in st.session_state.strategy_stats.items():
-            if stats['trades'] > 0 or stats['signals'] > 0:
-                win_rate = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
-                avg_pnl = stats['total_pnl'] / stats['trades'] if stats['trades'] > 0 else 0
-                strategy_data.append({
-                    "Strategy": strat,
-                    "Signals": stats['signals'],
-                    "Trades": stats['trades'],
-                    "Wins": stats['wins'],
-                    "Win%": round(win_rate, 1),
-                    "Total P&L": round(stats['total_pnl'], 2),
-                    "Avg P&L": round(avg_pnl, 2)
-                })
+        st.markdown("### 💼 Your Holdings from Zerodha")
         
-        if strategy_data:
+        if not st.session_state.zerodha_holdings.empty:
             st.dataframe(
-                pd.DataFrame(strategy_data),
+                st.session_state.zerodha_holdings,
                 column_config={
-                    "Total P&L": st.column_config.NumberColumn("Total P&L", format="₹%.2f"),
-                    "Avg P&L": st.column_config.NumberColumn("Avg P&L", format="₹%.2f"),
+                    'Avg Price': st.column_config.NumberColumn('Avg Price', format='₹%.2f'),
+                    'LTP': st.column_config.NumberColumn('LTP', format='₹%.2f'),
+                    'P&L': st.column_config.NumberColumn('P&L', format='₹%.2f'),
+                    'Day Change%': st.column_config.NumberColumn('Day Change%', format='%.2f%%'),
+                    'Value': st.column_config.NumberColumn('Value', format='₹%.2f')
                 },
-                hide_index=True
+                hide_index=True,
+                height=400
             )
+            
+            # Summary
+            total_value = st.session_state.zerodha_holdings['Value'].sum()
+            total_pnl = st.session_state.zerodha_holdings['P&L'].sum()
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Total Value", f"₹{round(total_value, 2):,}")
+            c2.metric("Total P&L", f"₹{round(total_pnl, 2):,}")
         else:
-            st.info("No analytics data yet")
+            st.info("📭 No holdings in your Zerodha account")
     
-    # --- TAB 4: HISTORY ---
+    # --- TAB 4: PATTERNS & SIGNALS ---
     with tab4:
-        if not st.session_state.history.empty:
-            st.dataframe(
-                st.session_state.history,
-                column_config={
-                    "Entry": st.column_config.NumberColumn("Entry", format="₹%.2f"),
-                    "Exit": st.column_config.NumberColumn("Exit", format="₹%.2f"),
-                    "P&L": st.column_config.NumberColumn("P&L", format="₹%.2f"),
-                    "%Return": st.column_config.NumberColumn("Return%", format="%.2f%%"),
-                },
-                hide_index=True
-            )
-            
-            total_trades = len(st.session_state.history)
-            total_pnl = st.session_state.history['P&L'].sum()
-            winning = len(st.session_state.history[st.session_state.history['P&L'] > 0])
-            avg_return = st.session_state.history['%Return'].mean()
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Trades", total_trades)
-            c2.metric("Total P&L", f"₹{round(total_pnl, 2)}")
-            c3.metric("Win Rate", f"{round((winning/total_trades)*100, 1)}%")
-            c4.metric("Avg Return", f"{round(avg_return, 2)}%")
-        else:
-            st.info("📭 No trade history")
+        st.markdown("### 🎯 Pattern Detection & Breakout Analysis")
+        
+        if st.session_state.market_status != "OPEN":
+            st.warning("⚠️ Pattern detection works during market hours")
+        
+        if st.button("🔍 Scan for Patterns", type="primary"):
+            with st.spinner("Scanning for patterns..."):
+                
+                # Top 50 liquid stocks
+                scan_symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 
+                               'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'HINDUNILVR', 'AXISBANK',
+                               'BAJFINANCE', 'ASIANPAINT', 'MARUTI', 'TITAN', 'SUNPHARMA', 
+                               'ULTRACEMCO', 'NESTLEIND', 'WIPRO', 'HCLTECH', 'TATAMOTORS']
+                
+                pattern_results = []
+                
+                for symbol in scan_symbols:
+                    try:
+                        # Get historical data
+                        token = st.session_state.instrument_map.get(symbol)
+                        if not token:
+                            continue
+                        
+                        to_date = datetime.now()
+                        from_date = to_date - timedelta(days=30)
+                        
+                        records = st.session_state.kite.historical_data(token, from_date, to_date, "day")
+                        df = pd.DataFrame(records)
+                        
+                        if df.empty:
+                            continue
+                        
+                        df.columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'oi']
+                        df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
+                        
+                        # Get current price
+                        price = df['Close'].iloc[-1]
+                        
+                        # Detect patterns
+                        patterns = detect_patterns(df, symbol, price)
+                        
+                        for p in patterns:
+                            pattern_results.append({
+                                'Symbol': symbol,
+                                'Pattern': p['Pattern'],
+                                'Signal': p['Signal'],
+                                'Level': p['Level'],
+                                'Distance%': p['Distance%'],
+                                'LTP': round(price, 2)
+                            })
+                    except:
+                        continue
+                
+                if pattern_results:
+                    st.success(f"✅ Found {len(pattern_results)} patterns!")
+                    
+                    df_patterns = pd.DataFrame(pattern_results)
+                    
+                    st.dataframe(
+                        df_patterns,
+                        column_config={
+                            'Level': st.column_config.NumberColumn('Level', format='₹%.2f'),
+                            'Distance%': st.column_config.NumberColumn('Distance%', format='%.2f%%'),
+                            'LTP': st.column_config.NumberColumn('LTP', format='₹%.2f')
+                        },
+                        hide_index=True,
+                        height=400
+                    )
+                else:
+                    st.info("No significant patterns detected")
     
-    # AUTO-REFRESH
-    if not st.session_state.portfolio.empty:
-        time.sleep(1)
-        st.rerun()
+    # Auto-refresh every 2 seconds
+    time.sleep(2)
+    st.rerun()
+
 else:
-    st.info("🔐 Authenticate with Zerodha in sidebar")
+    # Not authenticated
+    st.markdown("# 🔱 PRIMA PROFESSIONAL TERMINAL")
+    st.markdown("---")
+    st.info("👈 Please login with your Zerodha account in the sidebar to start")
+    
+    st.markdown("""
+    ### Features:
+    - ✅ Live Zerodha account integration
+    - ✅ Real-time WebSocket data for all NSE stocks
+    - ✅ Your positions & holdings monitoring
+    - ✅ Pattern detection & breakout analysis
+    - ✅ Professional institutional-grade UI
+    - ✅ Market status monitoring
+    """)
